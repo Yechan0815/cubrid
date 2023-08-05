@@ -998,6 +998,8 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
       /* make sure we don't append an unlinked sublist */
       MEMORY_BARRIER ();
 
+      while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
+
       /* link part of list to available */
       do
 	{
@@ -1011,6 +1013,9 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
       ATOMIC_INC_32 (&freelist->retired_cnt, -transported_count);
 
       LF_UNITTEST_INC (&lf_transports, transported_count);
+
+      if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
+        assert (false);
     }
 
   /* register cleanup */
