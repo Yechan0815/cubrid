@@ -213,6 +213,7 @@ lf_tran_system_init (LF_TRAN_SYSTEM * sys, int max_threads)
       sys->entries[i].last_cleanup_id = 0;
       sys->entries[i].retired_list = NULL;
       sys->entries[i].temp_entry = NULL;
+      sys->entries[i].stack = NULL;
 
 #if defined (UNITTEST_LF)
       sys->entries[i].locked_mutex = NULL;
@@ -752,7 +753,7 @@ void *
 lf_freelist_claim (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
 {
   LF_ENTRY_DESCRIPTOR *edesc;
-  void *entry;
+  void *entry, *head;
   bool local_tran = false;
 
   assert (tran_entry != NULL);
@@ -789,12 +790,14 @@ lf_freelist_claim (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
   /* claim an entry */
   while (true)
     {
-
       /* try to get a new entry form the safe stack */
-      entry = lf_stack_pop (&freelist->available, edesc);
+	    entry = VOLATILE_ACCESS (freelist->available, void *);
 
       if (entry != NULL)
 	{
+    freelist->available = OF_GET_PTR_DEREF (entry, edesc->of_local_next);
+    OF_GET_PTR_DEREF (entry, edesc->of_local_next) = NULL;
+
 	  /* adjust counter */
 	  ATOMIC_INC_32 (&freelist->available_cnt, -1);
 
