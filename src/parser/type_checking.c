@@ -4820,15 +4820,27 @@ pt_coerce_expression_argument (PARSER_CONTEXT * parser, PT_NODE * expr, PT_NODE 
       break;
 
     case PT_TYPE_NUMERIC:
-      if (PT_IS_DISCRETE_NUMBER_TYPE (node->type_enum))
+      switch (node->type_enum)
 	{
-	  precision = DB_DEFAULT_NUMERIC_PRECISION;
+	case PT_TYPE_SMALLINT:
+	  precision = DB_SMALLINT_PRECISION;
 	  scale = 0;
-	}
-      else
-	{
+	  break;
+
+	case PT_TYPE_INTEGER:
+	  precision = DB_INTEGER_PRECISION;
+	  scale = 0;
+	  break;
+
+	case PT_TYPE_BIGINT:
+	  precision = DB_BIGINT_PRECISION;
+	  scale = 0;
+	  break;
+
+	default:
 	  precision = DB_DEFAULT_NUMERIC_PRECISION;
 	  scale = DB_DEFAULT_NUMERIC_DIVISION_SCALE;
+	  break;
 	}
       break;
 
@@ -6795,45 +6807,6 @@ pt_product_sets (PARSER_CONTEXT * parser, TP_DOMAIN * domain, DB_VALUE * set1, D
   set_make_collection (result, set);
 
   return (!pt_has_error (parser));
-}
-
-/*
- * pt_do_where_type () -
- *   return:
- *   parser(in):
- *   node(in):
- *   arg(in):
- *   continue_walk(in):
- */
-PT_NODE *
-pt_do_where_type (PARSER_CONTEXT * parser, PT_NODE * node, void *arg, int *continue_walk)
-{
-  PT_NODE *spec = NULL;
-
-  if (node == NULL)
-    {
-      return NULL;
-    }
-
-  switch (node->node_type)
-    {
-    case PT_SELECT:
-      for (spec = node->info.query.q.select.from; spec; spec = spec->next)
-	{
-	  if (spec->node_type == PT_SPEC && spec->info.spec.on_cond)
-	    {
-	      spec->info.spec.on_cond = pt_where_type (parser, spec->info.spec.on_cond);
-	    }
-	}
-
-      node->info.query.q.select.where = pt_where_type (parser, node->info.query.q.select.where);
-      break;
-
-    default:
-      break;
-    }
-
-  return node;
 }
 
 /*
@@ -11299,6 +11272,8 @@ pt_common_type_op (PT_TYPE_ENUM t1, PT_OP_TYPE op, PT_TYPE_ENUM t2)
 {
   PT_TYPE_ENUM result_type;
 
+  static bool oracle_compat_number = prm_get_bool_value (PRM_ID_ORACLE_COMPAT_NUMBER_BEHAVIOR);
+
   if (pt_is_op_hv_late_bind (op) && (t1 == PT_TYPE_MAYBE || t2 == PT_TYPE_MAYBE))
     {
       result_type = PT_TYPE_MAYBE;
@@ -11310,6 +11285,12 @@ pt_common_type_op (PT_TYPE_ENUM t1, PT_OP_TYPE op, PT_TYPE_ENUM t2)
 
   switch (op)
     {
+    case PT_DIVIDE:
+      if (oracle_compat_number && PT_IS_DISCRETE_NUMBER_TYPE (t1) && PT_IS_DISCRETE_NUMBER_TYPE (t2))
+	{
+	  result_type = PT_TYPE_NUMERIC;
+	}
+      break;
     case PT_MINUS:
     case PT_TIMES:
       if (result_type == PT_TYPE_SEQUENCE)
@@ -12119,8 +12100,11 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
       switch (common_type)
 	{
 	case PT_TYPE_CHAR:
+	  /* this setting refers to db_value_domain_init function
+	     and see also CBRD-24828 and CBRD-24734 for setting precision to DB_DEFAULT_PRECISION
+	   */
 	  dt->info.data_type.precision = ((dt->info.data_type.precision > DB_MAX_CHAR_PRECISION)
-					  ? DB_MAX_CHAR_PRECISION : dt->info.data_type.precision);
+					  ? DB_DEFAULT_PRECISION : dt->info.data_type.precision);
 	  break;
 
 	case PT_TYPE_VARCHAR:
@@ -12130,7 +12114,7 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
 
 	case PT_TYPE_NCHAR:
 	  dt->info.data_type.precision = ((dt->info.data_type.precision > DB_MAX_NCHAR_PRECISION)
-					  ? DB_MAX_NCHAR_PRECISION : dt->info.data_type.precision);
+					  ? DB_DEFAULT_PRECISION : dt->info.data_type.precision);
 	  break;
 
 	case PT_TYPE_VARNCHAR:
@@ -18933,6 +18917,34 @@ error_zerodate:
 }
 
 /*
+ * pt_check_dblink_related_expr () - check dblinke-related expression
+ *   return: dblink_related = true if successful,
+ *           dblink_related = false if not successful.
+ *   parser(in): parser global context info for reentrancy
+ *   p(in): a parse tree representation of a constant expression
+ */
+
+static PT_NODE *
+pt_check_dblink_related_expr (PARSER_CONTEXT * parser, PT_NODE * p, void *arg, int *continue_walk)
+{
+  bool *dblink_related = (bool *) arg;
+
+  if (p->node_type == PT_NAME && p->info.name.spec_id)
+    {
+      PT_NODE *spec;
+
+      spec = (PT_NODE *) (p->info.name.spec_id);
+      if (spec->info.spec.derived_table_type == PT_DERIVED_DBLINK_TABLE)
+	{
+	  *dblink_related = true;
+	  *continue_walk = PT_STOP_WALK;
+	}
+    }
+
+  return p;
+}
+
+/*
  * pt_fold_const_expr () - evaluate constant expression
  *   return: the evaluated expression, if successful,
  *           unchanged expr, if not successful.
@@ -18972,6 +18984,19 @@ pt_fold_const_expr (PARSER_CONTEXT * parser, PT_NODE * expr, void *arg)
   if (expr->flag.do_not_fold)
     {
       return expr;
+    }
+
+  /* if dblink query, do not constant fold */
+  if (parser->dblink_remote)
+    {
+      bool dblink_related = false;
+
+      parser_walk_tree (parser, expr, pt_check_dblink_related_expr, &dblink_related, NULL, NULL);
+
+      if (dblink_related)
+	{
+	  return expr;
+	}
     }
 
   location = expr->info.expr.location;
@@ -20396,20 +20421,6 @@ pt_semantic_type (PARSER_CONTEXT * parser, PT_NODE * tree, SEMANTIC_CHK_INFO * s
   tree = parser_walk_tree (parser, tree, pt_eval_type_pre, sc_info_ptr, pt_eval_type, sc_info_ptr);
   /* do constant folding */
   tree = parser_walk_tree (parser, tree, pt_fold_constants_pre, NULL, pt_fold_constants_post, sc_info_ptr);
-  if (pt_has_error (parser))
-    {
-      tree = NULL;
-    }
-
-  /* When qo_reduce_equality_terms is executed in mq_optimize, a removable predicate like '1=1' is generated.
-   * This predicate is removed by executing pt_where_type after pt_fold_const_expr has executed.
-   * 
-   * If this predicate remains without being removed, it becomes a data filter and MRO (Multiple Key Ranges
-   * Optimization) cannot be performed.
-   *
-   * See CBRD-24735 for the details.
-   */
-  tree = parser_walk_tree (parser, tree, NULL, NULL, pt_do_where_type, NULL);
   if (pt_has_error (parser))
     {
       tree = NULL;

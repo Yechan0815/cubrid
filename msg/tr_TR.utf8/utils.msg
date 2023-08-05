@@ -496,7 +496,7 @@ kullanım: %1$s loaddb [SEÇENEK] database-name[@host]\n\
 geçerli seçenekler:\n\
   -S, --SA-mode                  stand-alone modu yürütme\n\
   -C, --CS-mode                  istemci-sunucu modunda yürütme\n\
-                                 UYARI: İstemci-sunucu modunda, yalnızca veri dosyası(-d, --data-file=DOSYA) yüklenebilir.\n\
+                                 UYARI: HA Modundayken, istemci-sunucu modunda sadece veri dosyaları (-d, --data-file=FILE) yüklenebilir.\n\
   -u, --user=ID                  veritabanı erişimi için kullanıcı kimliği; varsayılan: "public"\n\
   -p, --password=PASS            kullanıcı şifresi; varsayılan: hiçbir\n\
       --data-file-check-only     check syntax for data file without load; default: disabled\n\
@@ -559,6 +559,7 @@ geçerli seçenekler:\n\
   -C, --CS-mode               istemci-sunucu modunda yürütme\n\
       --datafile-per-class    her sınıf için bir nesne dosyası oluşturmak; varsayılan: devre dışı\n\
       --split-schema-files    şema bilgilerini nesneye göre ayırın ve her dosyayı oluşturun; Varsayılan: tüm nesnelerle bir şema dosyası oluştur\n\
+      --skip-index-detail     Dizini oluştururken belirtilen WITH yan tümcesi seçeneklerini yazdırmayın; varsayılan: devre dışı \n\
       --as-dba                Oturum açan kullanıcı DBA grubunun bir üyesiyse, DBA ile aynı şema dosyasını ayıklayın.\n
 
 
