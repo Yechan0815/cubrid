@@ -131,6 +131,8 @@ struct lf_tran_entry
   /* temp entry - for find_and_insert operations, to avoid unnecessary ops */
   void *temp_entry;
 
+  void *stack;
+
   /* attached transaction system */
   LF_TRAN_SYSTEM *tran_system;
 
@@ -147,7 +149,7 @@ struct lf_tran_entry
 #endif				/* UNITTEST_LF */
 };
 
-#define LF_TRAN_ENTRY_INITIALIZER     { 0, LF_NULL_TRANSACTION_ID, NULL, NULL, NULL, -1, false }
+#define LF_TRAN_ENTRY_INITIALIZER     { 0, LF_NULL_TRANSACTION_ID, NULL, NULL, NULL, NULL, -1, false }
 
 struct lf_tran_system
 {
@@ -227,6 +229,7 @@ extern void *lf_stack_pop (void **top, LF_ENTRY_DESCRIPTOR * edesc);
 typedef struct lf_freelist LF_FREELIST;
 struct lf_freelist
 {
+  INT32 occupation;
   /* available stack (i.e. entries that can be safely reclaimed) */
   void *available;
 
@@ -246,7 +249,7 @@ struct lf_freelist
 };
 
 #define LF_FREELIST_INITIALIZER \
-  { NULL, 0, 0, 0, 0, NULL, NULL }
+  { 0, NULL, 0, 0, 0, 0, NULL, NULL }
 
 extern int lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF_ENTRY_DESCRIPTOR * edesc,
 			     LF_TRAN_SYSTEM * tran_system);
