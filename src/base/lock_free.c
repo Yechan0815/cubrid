@@ -773,16 +773,14 @@ lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist)
 	}
     }
 
-      while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
+  while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
 
-  /* claim an entry */
-  while (true)
-    {
-      /* try to get a new entry form the safe stack */
-	    entry = VOLATILE_ACCESS (freelist->available, void *);
+start:
+  /* try to get a new entry form the safe stack */
+  entry = VOLATILE_ACCESS (freelist->available, void *);
 
-      if (entry != NULL)
-	{
+  if (entry != NULL)
+  {
     freelist->available = OF_GET_PTR_DEREF (entry, edesc->of_local_next);
     OF_GET_PTR_DEREF (entry, edesc->of_local_next) = NULL;
 
@@ -801,28 +799,22 @@ lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist)
 	  OF_GET_PTR_DEREF (entry, edesc->of_next) = NULL;
 
 	  /* done! */
+    if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
+      assert (false);
 
-      if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-          assert (false);
 	  return entry;
-	}
-      else
-	{
-	  /* NOTE: as you can see, more than one thread can start allocating a new freelist_entry block at the same
-	   * time; this behavior is acceptable given that the freelist has a _low_ enough value of block_size; it sure
-	   * beats synchronizing the operations */
-	  if (lf_freelist_alloc_block (freelist) != NO_ERROR)
-	    {
+  }
 
-        if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-          assert (false);
-	      return NULL;
-	    }
+  assert (entry == NULL);
 
-	  /* retry a stack pop */
-	  continue;
-	}
-    }
+  if (lf_freelist_alloc_block (freelist) != NO_ERROR)
+  {
+    if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
+      assert (false);
+    return NULL;
+  }
+
+  goto start;
 
   /* impossible! */
   assert (false);
