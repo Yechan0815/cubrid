@@ -545,15 +545,10 @@ lf_destroy_transaction_systems (void)
 int
 lf_stack_push (void **top, void *entry, LF_ENTRY_DESCRIPTOR * edesc)
 {
-  void *rtop = NULL;
   assert (top != NULL && entry != NULL && edesc != NULL);
 
-  do
-    {
-      rtop = *((void *volatile *) top);
-      OF_GET_PTR_DEREF (entry, edesc->of_local_next) = rtop;
-    }
-  while (!ATOMIC_CAS_ADDR (top, rtop, entry));
+  OF_GET_PTR_DEREF (entry, edesc->of_local_next) = *((void *volatile *) top);
+  *top = entry;
 
   /* done */
   return NO_ERROR;
@@ -997,12 +992,10 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
       while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
 
       /* link part of list to available */
-      do
-	{
-	  old_head = VOLATILE_ACCESS (freelist->available, void *);
-	  OF_GET_PTR_DEREF (aval_last, edesc->of_local_next) = old_head;
-	}
-      while (!ATOMIC_CAS_ADDR (&freelist->available, old_head, aval_first));
+      old_head = VOLATILE_ACCESS (freelist->available, void *);
+      OF_GET_PTR_DEREF (aval_last, edesc->of_local_next) = old_head;
+
+      freelist->available = aval_first;
 
       /* update counters */
       ATOMIC_INC_32 (&freelist->available_cnt, transported_count);
