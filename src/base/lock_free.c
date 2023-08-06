@@ -641,12 +641,10 @@ lf_freelist_alloc_block (LF_FREELIST * freelist)
     }
 
   /* append block to freelist */
-  do
-    {
-      top = VOLATILE_ACCESS (freelist->available, void *);
-      OF_GET_PTR_DEREF (head, edesc->of_local_next) = top;
-    }
-  while (!ATOMIC_CAS_ADDR (&freelist->available, top, tail));
+  top = VOLATILE_ACCESS (freelist->available, void *);
+  OF_GET_PTR_DEREF (head, edesc->of_local_next) = top;
+
+  freelist->available = tail;
 
   /* increment allocated count */
   ATOMIC_INC_32 (&freelist->alloc_cnt, freelist->block_size);
@@ -750,36 +748,31 @@ lf_freelist_destroy (LF_FREELIST * freelist)
  *   freelist(in): freelist to claim from
  */
 void *
-lf_freelist_claim (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
+lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist)
 {
   LF_ENTRY_DESCRIPTOR *edesc;
   void *entry, *head;
-  bool local_tran = false;
 
-  assert (tran_entry != NULL);
+  assert (tran != NULL);
   assert (freelist != NULL);
   assert (freelist->entry_desc != NULL);
 
   edesc = freelist->entry_desc;
 
-  LF_UNITTEST_INC (&lf_claims, 1);
-
   /* first check temporary entry */
-  if (tran_entry->temp_entry != NULL)
+  if (tran->temp_entry != NULL)
     {
-      entry = tran_entry->temp_entry;
-      tran_entry->temp_entry = NULL;
+      entry = tran->temp_entry;
+      tran->temp_entry = NULL;
       OF_GET_PTR_DEREF (entry, edesc->of_next) = NULL;
 
-      LF_UNITTEST_INC (&lf_claims_temp, 1);
-      LF_UNITTEST_INC (&lf_temps, -1);
       return entry;
     }
 
   /* clean retired list, if possible */
-  if (LF_TRAN_CLEANUP_NECESSARY (tran_entry))
+  if (LF_TRAN_CLEANUP_NECESSARY (tran))
     {
-      if (lf_freelist_transport (tran_entry, freelist) != NO_ERROR)
+      if (lf_freelist_transport (tran, freelist) != NO_ERROR)
 	{
 	  return NULL;
 	}
