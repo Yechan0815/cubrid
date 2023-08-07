@@ -56,8 +56,11 @@ typedef int (*LF_ENTRY_KEY_COMPARE_FUNC) (void *key1, void *key2);
 typedef unsigned int (*LF_ENTRY_HASH_FUNC) (void *key, int htsize);
 typedef int (*LF_ENTRY_DUPLICATE_KEY_HANDLER) (void *key, void *existing);
 
-#define LF_EM_NOT_USING_MUTEX		      0
-#define LF_EM_USING_MUTEX		      1
+#define LF_EM_NOT_USING_MUTEX		0
+#define LF_EM_USING_MUTEX			1
+
+/* prototype */
+typedef struct lf_freelist LF_FREELIST;
 
 typedef struct lf_entry_descriptor LF_ENTRY_DESCRIPTOR;
 struct lf_entry_descriptor
@@ -141,19 +144,13 @@ struct lf_tran_entry
 
   /* Was transaction ID incremented? */
   bool did_incr;
-
-#if defined (UNITTEST_LF)
-  /* Debug */
-  pthread_mutex_t *locked_mutex;
-  int locked_mutex_line;
-#endif				/* UNITTEST_LF */
 };
 
 #define LF_TRAN_ENTRY_INITIALIZER     { 0, LF_NULL_TRANSACTION_ID, NULL, NULL, NULL, NULL, -1, false }
 
 struct lf_tran_system
 {
-  /* pointer array to thread dtran entries */
+  /* pointer array to thread tran entries */
   LF_TRAN_ENTRY *entries;
 
   /* capacity */
@@ -171,6 +168,9 @@ struct lf_tran_system
   /* number of transactions between computing min_active_transaction_id */
   int mati_refresh_interval;
 
+  /* linked freelist */
+  LF_FREELIST *freelist;
+
   /* current used count */
   int used_entry_count;
 
@@ -179,7 +179,7 @@ struct lf_tran_system
 };
 
 #define LF_TRAN_SYSTEM_INITIALIZER \
-  { NULL, 0, {}, 0, 0, 100, 0, NULL }
+  { NULL, 0, {}, 0, 0, 100, NULL, 0, NULL }
 
 #define LF_TRAN_CLEANUP_NECESSARY(e) ((e)->tran_system->min_active_transaction_id > (e)->last_cleanup_id)
 
@@ -221,25 +221,44 @@ extern void lf_destroy_transaction_systems (void);
  * Lock free stack
  */
 extern int lf_stack_push (void **top, void *entry, LF_ENTRY_DESCRIPTOR * edesc);
+extern int lf_stack_multiple_push (void **top, void *head, void *tail, LF_ENTRY_DESCRIPTOR * edesc);
 extern void *lf_stack_pop (void **top, LF_ENTRY_DESCRIPTOR * edesc);
 
 /*
  * Lock free freelist
  */
+#define LF_FREELIST_RELEASE		0
+#define LF_FREELIST_HOLD		1
+
+/* this should be a power of 2 */
+#define LF_FREELIST_BUNDLE_SIZE (1 << 3)
+
 typedef struct lf_freelist LF_FREELIST;
 struct lf_freelist
 {
   INT32 occupation;
-  /* available stack (i.e. entries that can be safely reclaimed) */
-  void *available;
 
-  /* allocation block size */
+  /* allocation unit */
   int block_size;
 
-  /* entry counters */
-  int alloc_cnt;
-  int available_cnt;
-  int retired_cnt;
+  /* total number allocated */
+  int total;
+
+  /* available blocks */
+  struct
+  {
+    void *ptr;
+    int count;
+  } available;
+
+  /* retired blocks */
+  /* retired blocks are protected by transaction because this module is lock free! */
+  /* so, retired blocks can't be used immediately */
+  struct
+  {
+    void *ptr;
+    int count;
+  } retired;
 
   /* entry descriptor */
   LF_ENTRY_DESCRIPTOR *entry_desc;
@@ -249,7 +268,7 @@ struct lf_freelist
 };
 
 #define LF_FREELIST_INITIALIZER \
-  { 0, NULL, 0, 0, 0, 0, NULL, NULL }
+  { LF_FREELIST_RELEASE, 0, 0, { NULL, 0 }, { NULL, 0 }, NULL, NULL }
 
 extern int lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF_ENTRY_DESCRIPTOR * edesc,
 			     LF_TRAN_SYSTEM * tran_system);
@@ -355,10 +374,6 @@ struct lf_hash_table_iterator
 extern void lf_hash_create_iterator (LF_HASH_TABLE_ITERATOR * iterator, LF_TRAN_ENTRY * tran_entry,
 				     LF_HASH_TABLE * table);
 extern void *lf_hash_iterate (LF_HASH_TABLE_ITERATOR * it);
-
-#if defined (UNITTEST_LF)
-extern void lf_reset_counters (void);
-#endif /* UNITTEST_LF */
 
 // C++ style lock-free hash
 // *INDENT-OFF*
@@ -608,8 +623,8 @@ template <class Key, class T>
 size_t
 lf_hash_table_cpp<Key, T>::get_element_count () const
 {
-  int alloc_count = m_freelist.alloc_cnt;
-  int unused_count = m_freelist.available_cnt + m_freelist.retired_cnt;
+  int alloc_count = m_freelist.total;
+  int unused_count = m_freelist.available.count + m_freelist.retired.count;
   if (alloc_count > unused_count)
     {
       return static_cast<size_t> (alloc_count - unused_count);

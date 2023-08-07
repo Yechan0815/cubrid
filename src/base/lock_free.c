@@ -64,6 +64,18 @@ static bool tran_systems_initialized = false;
 #define OF_GET_PTR(p,o)		(void *) (((char *)(p)) + (o))
 #define OF_GET_PTR_DEREF(p,o)	(*OF_GET_REF (p,o))
 
+#define FREELIST_HOLD(occupation) \
+  do { \
+    while (!ATOMIC_CAS_32 (&(occupation), LF_FREELIST_RELEASE, LF_FREELIST_HOLD)); \
+  } while (0)
+
+/* this must be called after occupying the freelist */
+#define FREELIST_RELEASE(occupation) \
+  do { \
+    if (!ATOMIC_CAS_32 (&(occupation), LF_FREELIST_HOLD, LF_FREELIST_RELEASE)) \
+      assert_release (false); \
+  } while (0)
+
 /*
  * Address mark macros
  */
@@ -79,49 +91,11 @@ static bool tran_systems_initialized = false;
 #pragma warning (disable : 4197)
 #endif
 
-static INT64 lf_hash_size = 0;
-
-static INT64 lf_inserts = 0;
-static INT64 lf_inserts_restart = 0;
-static INT64 lf_list_inserts = 0;
-static INT64 lf_list_inserts_found = 0;
-static INT64 lf_list_inserts_save_temp_1 = 0;
-static INT64 lf_list_inserts_save_temp_2 = 0;
-static INT64 lf_list_inserts_claim = 0;
-static INT64 lf_list_inserts_fail_link = 0;
-static INT64 lf_list_inserts_success_link = 0;
-
-static INT64 lf_deletes = 0;
-static INT64 lf_deletes_restart = 0;
-static INT64 lf_list_deletes = 0;
-static INT64 lf_list_deletes_found = 0;
-static INT64 lf_list_deletes_fail_mark_next = 0;
-static INT64 lf_list_deletes_fail_unlink = 0;
-static INT64 lf_list_deletes_success_unlink = 0;
-static INT64 lf_list_deletes_not_found = 0;
-static INT64 lf_list_deletes_not_match = 0;
-
-static INT64 lf_clears = 0;
-
-static INT64 lf_retires = 0;
-static INT64 lf_claims = 0;
-static INT64 lf_claims_temp = 0;
-static INT64 lf_transports = 0;
-static INT64 lf_temps = 0;
-
-#if defined (UNITTEST_LF)
-#define LF_UNITTEST_INC(lf_stat, incval) ATOMIC_INC_64 (lf_stat, incval)
-#else /* !UNITTEST_LF */
-#define LF_UNITTEST_INC(lf_stat, incval)
-#endif
-
-#if defined (UNITTEST_LF) || defined (UNITTEST_CQ)
 #if defined (NDEBUG)
 /* Abort when calling assert even if it is not debug */
 #define assert(cond) if (!(cond)) abort ()
 #define assert_release(cond) if (!(cond)) abort ()
 #endif /* NDEBUG */
-#endif /* UNITTEST_LF || UNITTEST_CQ */
 
 static int lf_list_insert_internal (LF_TRAN_ENTRY * tran, void **list_p, void *key, int *behavior_flags,
 				    LF_ENTRY_DESCRIPTOR * edesc, LF_FREELIST * freelist, void **entry, int *inserted);
@@ -191,6 +165,8 @@ lf_tran_system_init (LF_TRAN_SYSTEM * sys, int max_threads)
   sys->entry_count = LF_BITMAP_COUNT_ALIGN (max_threads);
   sys->lf_bitmap.init (LF_BITMAP_ONE_CHUNK, sys->entry_count, LF_BITMAP_FULL_USAGE_RATIO);
 
+  sys->freelist = NULL;
+
   /* initialize entry array */
   sys->entries = (LF_TRAN_ENTRY *) malloc (sizeof (LF_TRAN_ENTRY) * sys->entry_count);
   if (sys->entries == NULL)
@@ -214,11 +190,6 @@ lf_tran_system_init (LF_TRAN_SYSTEM * sys, int max_threads)
       sys->entries[i].retired_list = NULL;
       sys->entries[i].temp_entry = NULL;
       sys->entries[i].stack = NULL;
-
-#if defined (UNITTEST_LF)
-      sys->entries[i].locked_mutex = NULL;
-      sys->entries[i].locked_mutex_line = -1;
-#endif /* UNITTEST_LF */
     }
 
   sys->used_entry_count = 0;
@@ -291,11 +262,6 @@ lf_tran_request_entry (LF_TRAN_SYSTEM * sys)
 
   assert (entry->transaction_id == LF_NULL_TRANSACTION_ID);
 
-#if defined (UNITTEST_LF)
-  entry->locked_mutex = NULL;
-  entry->locked_mutex_line = -1;
-#endif /* UNITTEST_LF */
-
   return entry;
 }
 
@@ -341,6 +307,7 @@ lf_tran_destroy_entry (LF_TRAN_ENTRY * entry)
   assert (entry != NULL);
   assert (entry->tran_system != NULL);
 
+  /* if unused block is passed to uninit, it will break! */
   edesc = entry->tran_system->entry_desc;
   if (edesc != NULL)
     {
@@ -357,6 +324,22 @@ lf_tran_destroy_entry (LF_TRAN_ENTRY * entry)
 	}
 
       entry->retired_list = NULL;
+
+/* stack */
+      curr = entry->stack;
+      next = NULL;
+          while (curr != NULL)
+      {
+        next = (void *) OF_GET_PTR_DEREF (curr, edesc->of_local_next);
+        if (edesc->f_uninit != NULL)
+          {
+            edesc->f_uninit (curr);
+          }
+        edesc->f_free (curr);
+        curr = next;
+      }
+
+        entry->stack = NULL;
     }
 }
 
@@ -507,6 +490,13 @@ lf_initialize_transaction_systems (int max_threads)
     }
 
   tran_systems_initialized = true;
+
+/*
+#if defined (SERVER_MODE)
+  lock_free_daemon_init ();
+#endif
+*/
+
   return NO_ERROR;
 
 error:
@@ -520,6 +510,12 @@ error:
 void
 lf_destroy_transaction_systems (void)
 {
+/*
+#if defined (SERVER_MODE)
+  lock_free_daemon_destroy ();
+#endif
+*/
+
   lf_tran_system_destroy (&spage_saving_Ts);
   lf_tran_system_destroy (&obj_lock_res_Ts);
   lf_tran_system_destroy (&obj_lock_ent_Ts);
@@ -545,12 +541,35 @@ lf_destroy_transaction_systems (void)
 int
 lf_stack_push (void **top, void *entry, LF_ENTRY_DESCRIPTOR * edesc)
 {
+  void *rtop = NULL;
+
   assert (top != NULL && entry != NULL && edesc != NULL);
 
-  OF_GET_PTR_DEREF (entry, edesc->of_local_next) = *((void *volatile *) top);
-  *top = entry;
+  do
+    {
+      rtop = *((void *volatile *) top);
+      OF_GET_PTR_DEREF (entry, edesc->of_local_next) = rtop;
+    }
+  while (!ATOMIC_CAS_ADDR (top, rtop, entry));
 
   /* done */
+  return NO_ERROR;
+}
+
+int
+lf_stack_multiple_push (void **top, void *head, void *tail, LF_ENTRY_DESCRIPTOR * edesc)
+{
+  void *rtop = NULL;
+
+  assert (top != NULL && head != NULL && tail != NULL && edesc != NULL);
+
+  do
+    {
+      rtop = *((void *volatile *) top);
+      OF_GET_PTR_DEREF (tail, edesc->of_local_next) = rtop;
+    }
+  while (!ATOMIC_CAS_ADDR (top, rtop, head));
+
   return NO_ERROR;
 }
 
@@ -613,27 +632,27 @@ lf_freelist_alloc_block (LF_FREELIST * freelist)
   assert (freelist != NULL && freelist->entry_desc != NULL);
   edesc = freelist->entry_desc;
 
-  head = VOLATILE_ACCESS (freelist->available, void *);
+  head = VOLATILE_ACCESS (freelist->available.ptr, void *);
 
   for (i = 0; i < freelist->block_size; i++)
     {
       entry = edesc->f_alloc ();
       if (entry == NULL)
-      {
-        /* we use a decoy size since we don't know it */
-        er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1, (size_t) 1);
-        return ER_OUT_OF_VIRTUAL_MEMORY;
-      }
+	{
+	  /* we use a decoy size since we don't know it */
+	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1, (size_t) 1);
+	  return ER_OUT_OF_VIRTUAL_MEMORY;
+	}
 
       OF_GET_PTR_DEREF (entry, edesc->of_local_next) = head;
       head = entry;
     }
 
-  freelist->available = head;
+  freelist->available.ptr = head;
 
   /* increment allocated count */
-  freelist->alloc_cnt += freelist->block_size;
-  freelist->available_cnt += freelist->block_size;
+  freelist->total += freelist->block_size;
+  freelist->available.count += freelist->block_size;
 
   /* operation successful, block appended */
   return NO_ERROR;
@@ -656,34 +675,48 @@ lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF
   assert (tran_system != NULL);
   assert (initial_blocks >= 1);
 
-  if (freelist->available != NULL)
+  if (freelist->available.ptr != NULL)
     {
       /* already initialized */
       return NO_ERROR;
     }
 
   /* initialize fields */
-  freelist->occupation = 0;
-  freelist->available = NULL;
+  freelist->occupation = LF_FREELIST_RELEASE;
 
-  freelist->available_cnt = 0;
-  freelist->retired_cnt = 0;
-  freelist->alloc_cnt = 0;
-
+  /* make block size to a multiple of LF_FREELIST_BUNDLE_SIZE */
+  block_size &= (~(LF_FREELIST_BUNDLE_SIZE - 1));
+  block_size += LF_FREELIST_BUNDLE_SIZE;
   freelist->block_size = block_size;
-  freelist->block_size += 8;
+
+  freelist->total = 0;
+
+  freelist->available.ptr = NULL;
+  freelist->available.count = 0;
+
+  freelist->retired.ptr = NULL;
+  freelist->retired.count = 0;
+
   freelist->entry_desc = edesc;
   freelist->tran_system = tran_system;
 
+  /* give to tran_system */
+  tran_system->freelist = freelist;
   tran_system->entry_desc = edesc;
+
+  /* hold */
+  FREELIST_HOLD (freelist->occupation);
 
   for (i = 0; i < initial_blocks; i++)
     {
       if (lf_freelist_alloc_block (freelist) != NO_ERROR)
 	{
+	  FREELIST_RELEASE (freelist->occupation);
 	  return ER_FAILED;
 	}
     }
+
+  FREELIST_RELEASE (freelist->occupation);
 
   /* all ok */
   return NO_ERROR;
@@ -701,13 +734,13 @@ lf_freelist_destroy (LF_FREELIST * freelist)
 
   assert (freelist != NULL);
 
-  if (freelist->available == NULL)
+  if (freelist->available.ptr == NULL)
     {
       return;
     }
 
   edesc = freelist->entry_desc;
-  entry = freelist->available;
+  entry = freelist->available.ptr;
   if (entry != NULL)
     {
       do
@@ -724,7 +757,7 @@ lf_freelist_destroy (LF_FREELIST * freelist)
       while (entry != NULL);
     }
 
-  freelist->available = NULL;
+  freelist->available.ptr = NULL;
 }
 
 /*
@@ -766,56 +799,65 @@ lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist)
     }
 
 start:
+  /* get block from safe stack */
   if (tran->stack != NULL)
-  {
-    entry = tran->stack;
-    tran->stack = OF_GET_PTR_DEREF (entry, edesc->of_local_next);
-    OF_GET_PTR_DEREF (entry, edesc->of_local_next) = NULL;
+    {
+      /* block in the stack is already initialized */
+      entry = tran->stack;
+      tran->stack = OF_GET_PTR_DEREF (entry, edesc->of_local_next);
+      OF_GET_PTR_DEREF (entry, edesc->of_local_next) = NULL;
 
-	  if ((edesc->f_init != NULL) && (edesc->f_init (entry) != NO_ERROR))
-	    {
-	      return NULL;
-	    }
+      /* initialize next */
+      OF_GET_PTR_DEREF (entry, edesc->of_next) = NULL;
 
-	  /* initialize next */
-	  OF_GET_PTR_DEREF (entry, edesc->of_next) = NULL;
-
-	  /* done! */
-	  return entry;
-  }
-
-  while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
+      return entry;
+    }
 
   assert (tran->stack == NULL);
+  /* there is no block in local stack */
+  /* so get the blocks from freelist */
 
-  if (VOLATILE_ACCESS (freelist->available_cnt, int) < 8)
-  {
-    if (lf_freelist_alloc_block (freelist) != NO_ERROR)
+  /* hold */
+  FREELIST_HOLD (freelist->occupation);
+
+  if (VOLATILE_ACCESS (freelist->available.count, int) < 8)
     {
-      if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-        assert (false);
-      return NULL;
+      if (lf_freelist_alloc_block (freelist) != NO_ERROR)
+	{
+	  FREELIST_RELEASE (freelist->occupation);
+	  return NULL;
+	}
     }
-  }
 
-  head = VOLATILE_ACCESS (freelist->available, void *);
+  head = VOLATILE_ACCESS (freelist->available.ptr, void *);
   tail = head;
 
-  /* why ?? */
-  for (i = 0; i < 8 - 1; i++) // << this line makes problem
-  {
-    tail = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
-    assert (tail != NULL);
-  }
+  for (i = 0; i < LF_FREELIST_BUNDLE_SIZE - 1; i++)
+    {
+      tail = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
+      assert (tail != NULL);
+    }
 
-  freelist->available = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
-  freelist->available_cnt -= 8;
-  
-  if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-    assert (false);
+  freelist->available.ptr = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
+  freelist->available.count -= LF_FREELIST_BUNDLE_SIZE;
+
+  FREELIST_RELEASE (freelist->occupation);
 
   OF_GET_PTR_DEREF (tail, edesc->of_local_next) = NULL;
   tran->stack = head;
+
+  /* the blocks are initialized here to prevent the uninit crash when blocks are freed */
+  if (edesc->f_init != NULL)
+  {
+    while (head)
+    {
+      if (edesc->f_init (head) != NO_ERROR)
+      {
+        return NULL;
+      }
+      head = OF_GET_PTR_DEREF (head, edesc->of_local_next); 
+    } 
+  }
 
   goto start;
 
@@ -832,33 +874,34 @@ start:
  *   entry(in): entry to retire
  */
 int
-lf_freelist_retire (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist, void *entry)
+lf_freelist_retire (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, void *entry)
 {
   LF_ENTRY_DESCRIPTOR *edesc;
   UINT64 *tran_id;
   int ret = NO_ERROR;
   bool local_tran = false;
 
-  assert (entry != NULL && tran_entry != NULL);
+  assert (entry != NULL && tran != NULL);
   assert (freelist != NULL);
   edesc = freelist->entry_desc;
   assert (edesc != NULL);
 
   /* see if local transaction is required */
-  if (tran_entry->transaction_id == LF_NULL_TRANSACTION_ID)
+  if (tran->transaction_id == LF_NULL_TRANSACTION_ID)
     {
       local_tran = true;
-      lf_tran_start_with_mb (tran_entry, true);
+      lf_tran_start_with_mb (tran, true);
     }
-  else if (!tran_entry->did_incr)
+  /* promotion */
+  else if (!tran->did_incr)
     {
-      lf_tran_start_with_mb (tran_entry, true);
+      lf_tran_start_with_mb (tran, true);
     }
 
   /* do a retired list cleanup, if possible */
-  if (LF_TRAN_CLEANUP_NECESSARY (tran_entry))
+  if (LF_TRAN_CLEANUP_NECESSARY (tran))
     {
-      if (lf_freelist_transport (tran_entry, freelist) != NO_ERROR)
+      if (lf_freelist_transport (tran, freelist) != NO_ERROR)
 	{
 	  return ER_FAILED;
 	}
@@ -866,16 +909,14 @@ lf_freelist_retire (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist, void *en
 
   /* set transaction index of entry */
   tran_id = (UINT64 *) OF_GET_PTR (entry, edesc->of_del_tran_id);
-  *tran_id = tran_entry->transaction_id;
+  *tran_id = tran->transaction_id;
 
   /* push to local list */
-  ret = lf_stack_push (&tran_entry->retired_list, entry, edesc);
+  ret = lf_stack_push (&tran->retired_list, entry, edesc);
   if (ret == NO_ERROR)
     {
       /* for stats purposes */
-      ATOMIC_INC_32 (&freelist->retired_cnt, 1);
-
-      LF_UNITTEST_INC (&lf_retires, 1);
+      ATOMIC_INC_32 (&freelist->retired.count, 1);
     }
   else
     {
@@ -885,7 +926,7 @@ lf_freelist_retire (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist, void *en
   /* end local transaction */
   if (local_tran)
     {
-      lf_tran_end_with_mb (tran_entry);
+      lf_tran_end_with_mb (tran);
     }
 
   return ret;
@@ -984,23 +1025,21 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
       /* make sure we don't append an unlinked sublist */
       MEMORY_BARRIER ();
 
-      while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
+      /* hold */
+      FREELIST_HOLD (freelist->occupation);
 
       /* link part of list to available */
-      old_head = VOLATILE_ACCESS (freelist->available, void *);
+      old_head = VOLATILE_ACCESS (freelist->available.ptr, void *);
       OF_GET_PTR_DEREF (aval_last, edesc->of_local_next) = old_head;
 
-      freelist->available = aval_first;
+      freelist->available.ptr = aval_first;
 
       /* update counters */
-      freelist->available_cnt += transported_count;
+      freelist->available.count += transported_count;
 
-      LF_UNITTEST_INC (&lf_transports, transported_count);
+      FREELIST_RELEASE (freelist->occupation);
 
-      if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-        assert (false);
-
-      ATOMIC_INC_32 (&freelist->retired_cnt, -transported_count);
+      ATOMIC_INC_32 (&freelist->retired.count, -transported_count);
     }
 
   /* register cleanup */
@@ -1284,36 +1323,6 @@ lf_list_insert_internal (LF_TRAN_ENTRY * tran, void **list_p, void *key, int *be
 #define LF_END_TRAN_FORCE() \
   assert (is_tran_started); lf_tran_end_with_mb (tran); is_tran_started = false
 
-#if defined (UNITTEST_LF)
-  /* Lock current entry (using mutex is expected) */
-#define LF_LOCK_ENTRY(tolock) \
-  assert (tran->locked_mutex == NULL); \
-  assert (edesc->using_mutex); \
-  assert ((tolock) != NULL); \
-  assert (entry_mutex == NULL); \
-  /* entry has a mutex protecting it's members; lock it */ \
-  entry_mutex = (pthread_mutex_t *) OF_GET_PTR (tolock, edesc->of_mutex); \
-  tran->locked_mutex_line = __LINE__; \
-  tran->locked_mutex = entry_mutex; \
-  rv = pthread_mutex_lock (entry_mutex)
-
-  /* Unlock current entry (if it was locked). */
-#define LF_UNLOCK_ENTRY() \
-  if (edesc->using_mutex && entry_mutex) \
-    { \
-      assert (tran->locked_mutex == entry_mutex); \
-      tran->locked_mutex = NULL; \
-      pthread_mutex_unlock (entry_mutex); \
-      entry_mutex = NULL; \
-    }
-  /* Force unlocking current entry (it is expected to be locked). */
-#define LF_UNLOCK_ENTRY_FORCE() \
-  assert (edesc->using_mutex && entry_mutex != NULL); \
-  assert (tran->locked_mutex == entry_mutex); \
-  tran->locked_mutex = NULL; \
-  pthread_mutex_unlock (entry_mutex); \
-  entry_mutex = NULL
-#else /* !UNITTEST_LF */
   /* Lock current entry (using mutex is expected) */
 #define LF_LOCK_ENTRY(tolock) \
   assert (edesc->using_mutex); \
@@ -1335,7 +1344,6 @@ lf_list_insert_internal (LF_TRAN_ENTRY * tran, void **list_p, void *key, int *be
   assert (edesc->using_mutex && entry_mutex != NULL); \
   pthread_mutex_unlock (entry_mutex); \
   entry_mutex = NULL
-#endif /* !UNITTEST_LF */
 
   pthread_mutex_t *entry_mutex = NULL;	/* Locked entry mutex when not NULL */
   void **curr_p;
@@ -1358,8 +1366,6 @@ lf_list_insert_internal (LF_TRAN_ENTRY * tran, void **list_p, void *key, int *be
 
 restart_search:
 
-  LF_UNITTEST_INC (&lf_list_inserts, 1);
-
   LF_START_TRAN_FORCE ();
 
   curr_p = list_p;
@@ -1377,16 +1383,11 @@ restart_search:
 	    {
 	      /* found an entry with the same key. */
 
-	      LF_UNITTEST_INC (&lf_list_inserts_found, 1);
-
 	      if (!LF_LIST_BF_IS_FLAG_SET (behavior_flags, LF_LIST_BF_INSERT_GIVEN) && *entry != NULL)
 		{
 		  /* save this for further (local) use. */
 		  assert (tran->temp_entry == NULL);
 		  tran->temp_entry = *entry;
-
-		  LF_UNITTEST_INC (&lf_list_inserts_save_temp_1, 1);
-		  LF_UNITTEST_INC (&lf_temps, 1);
 
 		  /* don't keep the entry around. */
 		  *entry = NULL;
@@ -1510,8 +1511,6 @@ restart_search:
 		  return ER_FAILED;
 		}
 
-	      LF_UNITTEST_INC (&lf_list_inserts_claim, 1);
-
 	      /* set it's key */
 	      if (edesc->f_key_copy (key, OF_GET_PTR (*entry, edesc->of_key)) != NO_ERROR)
 		{
@@ -1536,8 +1535,6 @@ restart_search:
 		  LF_UNLOCK_ENTRY_FORCE ();
 		}
 
-	      LF_UNITTEST_INC (&lf_list_inserts_fail_link, 1);
-
 	      /* someone added before us, restart process */
 	      if (LF_LIST_BF_IS_FLAG_SET (behavior_flags, LF_LIST_BF_RETURN_ON_RESTART))
 		{
@@ -1546,9 +1543,6 @@ restart_search:
 		      assert (tran->temp_entry == NULL);
 		      tran->temp_entry = *entry;
 		      *entry = NULL;
-
-		      LF_UNITTEST_INC (&lf_list_inserts_save_temp_2, 1);
-		      LF_UNITTEST_INC (&lf_temps, 1);
 		    }
 		  LF_LIST_BR_SET_FLAG (behavior_flags, LF_LIST_BR_RESTARTED);
 		  LF_END_TRAN_FORCE ();
@@ -1561,8 +1555,6 @@ restart_search:
 		}
 	    }
 
-	  LF_UNITTEST_INC (&lf_list_inserts_success_link, 1);
-
 	  /* end transaction if mutex is acquired */
 	  if (edesc->using_mutex)
 	    {
@@ -1572,7 +1564,6 @@ restart_search:
 	    {
 	      *inserted = 1;
 	    }
-	  LF_UNITTEST_INC (&lf_hash_size, 1);
 
 	  /* done! */
 	  return NO_ERROR;
@@ -1622,27 +1613,6 @@ lf_list_delete (LF_TRAN_ENTRY * tran, void **list_p, void *key, void *locked_ent
 #define LF_END_TRAN_FORCE() \
   assert (is_tran_started); lf_tran_end_with_mb (tran); is_tran_started = false
 
-#if defined (UNITTEST_LF)
-  /* Lock current entry (using mutex is expected) */
-#define LF_LOCK_ENTRY(tolock) \
-  assert (edesc->using_mutex); \
-  assert ((tolock) != NULL); \
-  assert (entry_mutex == NULL); \
-  /* entry has a mutex protecting it's members; lock it */ \
-  entry_mutex = (pthread_mutex_t *) OF_GET_PTR (tolock, edesc->of_mutex); \
-  assert (tran->locked_mutex == NULL); \
-  tran->locked_mutex = entry_mutex; \
-  tran->locked_mutex_line = __LINE__; \
-  rv = pthread_mutex_lock (entry_mutex)
-
-  /* Force unlocking current entry (it is expected to be locked). */
-#define LF_UNLOCK_ENTRY_FORCE() \
-  assert (edesc->using_mutex && entry_mutex != NULL); \
-  assert (tran->locked_mutex == entry_mutex); \
-  tran->locked_mutex = NULL; \
-  pthread_mutex_unlock (entry_mutex); \
-  entry_mutex = NULL
-#else /* !UNITTEST_LF */
   /* Lock current entry (using mutex is expected) */
 #define LF_LOCK_ENTRY(tolock) \
   assert (edesc->using_mutex); \
@@ -1657,7 +1627,6 @@ lf_list_delete (LF_TRAN_ENTRY * tran, void **list_p, void *key, void *locked_ent
   assert (edesc->using_mutex && entry_mutex != NULL); \
   pthread_mutex_unlock (entry_mutex); \
   entry_mutex = NULL
-#endif /* !UNITTEST_LF */
 
   pthread_mutex_t *entry_mutex = NULL;
   void **curr_p, **next_p;
@@ -1676,8 +1645,6 @@ lf_list_delete (LF_TRAN_ENTRY * tran, void **list_p, void *key, void *locked_ent
   assert (tran != NULL && tran->tran_system != NULL);
 
 restart_search:
-
-  LF_UNITTEST_INC (&lf_list_deletes, 1);
 
   /* read transaction; we start a write transaction only after remove */
   LF_START_TRAN_FORCE ();
@@ -1698,7 +1665,6 @@ restart_search:
 	      /* We are here because lf_hash_delete_already_locked was called. The entry found by matching key is
 	       * different from the entry we were trying to delete.
 	       * This is possible (please find the description of lf_hash_delete_already_locked). */
-	      LF_UNITTEST_INC (&lf_list_deletes_not_match, 1);
 	      LF_END_TRAN_FORCE ();
 	      return NO_ERROR;
 	    }
@@ -1707,15 +1673,10 @@ restart_search:
 	  next_p = (void **) OF_GET_REF (curr, edesc->of_next);
 	  next = ADDR_STRIP_MARK (*((void *volatile *) next_p));
 
-	  LF_UNITTEST_INC (&lf_list_deletes_found, 1);
-
 	  /* set mark on next pointer; this way, if anyone else is trying to delete the next entry, it will fail */
 	  if (!ATOMIC_CAS_ADDR (next_p, next, ADDR_WITH_MARK (next)))
 	    {
 	      /* joke's on us, this time; somebody else marked it before */
-
-	      LF_UNITTEST_INC (&lf_list_deletes_fail_mark_next, 1);
-
 	      LF_END_TRAN_FORCE ();
 	      if (behavior_flags && (*behavior_flags & LF_LIST_BF_RETURN_ON_RESTART))
 		{
@@ -1739,14 +1700,7 @@ restart_search:
 	      else
 		{
 		  /* Must be already locked! */
-#if defined (UNITTEST_LF)
-		  assert (locked_entry != NULL && locked_entry == curr);
-#endif /* UNITTEST_LF */
 		  entry_mutex = (pthread_mutex_t *) OF_GET_PTR (curr, edesc->of_mutex);
-
-#if defined (UNITTEST_LF)
-		  assert (tran->locked_mutex != NULL && tran->locked_mutex == entry_mutex);
-#endif /* UNITTEST_LF */
 		}
 
 	      /* since we set the mark, nobody else can delete it, so we have nothing else to check */
@@ -1760,8 +1714,6 @@ restart_search:
 		{
 		  LF_UNLOCK_ENTRY_FORCE ();
 		}
-
-	      LF_UNITTEST_INC (&lf_list_deletes_fail_unlink, 1);
 
 	      /* remove mark and restart search */
 	      if (!ATOMIC_CAS_ADDR (next_p, ADDR_WITH_MARK (next), next))
@@ -1785,8 +1737,6 @@ restart_search:
 		}
 	    }
 	  /* unlink successful */
-
-	  LF_UNITTEST_INC (&lf_list_deletes_success_unlink, 1);
 
 	  /* unlock mutex */
 	  if (edesc->using_mutex)
@@ -1812,7 +1762,6 @@ restart_search:
 	    {
 	      *success = 1;
 	    }
-	  LF_UNITTEST_INC (&lf_hash_size, -1);
 
 	  /* success! */
 	  return NO_ERROR;
@@ -1822,8 +1771,6 @@ restart_search:
       curr_p = (void **) OF_GET_REF (curr, edesc->of_next);
       curr = ADDR_STRIP_MARK (*((void *volatile *) curr_p));
     }
-
-  LF_UNITTEST_INC (&lf_list_deletes_not_found, 1);
 
   /* search yielded no result so no delete was performed */
   LF_END_TRAN_FORCE ();
@@ -2030,8 +1977,6 @@ lf_hash_insert_internal (LF_TRAN_ENTRY * tran, LF_HASH_TABLE * table, void *key,
   edesc = table->entry_desc;
   assert (edesc != NULL);
 
-  LF_UNITTEST_INC (&lf_inserts, 1);
-
 restart:
   if (LF_LIST_BF_IS_FLAG_SET (&bflags, LF_LIST_BF_INSERT_GIVEN))
     {
@@ -2053,7 +1998,6 @@ restart:
   if ((rc == NO_ERROR) && (bflags & LF_LIST_BR_RESTARTED))
     {
       bflags &= ~LF_LIST_BR_RESTARTED;
-      LF_UNITTEST_INC (&lf_inserts_restart, 1);
       goto restart;
     }
   else
@@ -2181,8 +2125,6 @@ lf_hash_delete_internal (LF_TRAN_ENTRY * tran, LF_HASH_TABLE * table, void *key,
   edesc = table->entry_desc;
   assert (edesc != NULL);
 
-  LF_UNITTEST_INC (&lf_deletes, 1);
-
 restart:
   if (success != NULL)
     {
@@ -2200,7 +2142,6 @@ restart:
     {
       /* Remove LF_LIST_BR_RESTARTED from behavior flags. */
       bflags &= ~LF_LIST_BR_RESTARTED;
-      LF_UNITTEST_INC (&lf_deletes_restart, 1);
       goto restart;
     }
   else
@@ -2220,6 +2161,7 @@ restart:
 void
 lf_hash_clear (LF_TRAN_ENTRY * tran, LF_HASH_TABLE * table)
 {
+  LF_FREELIST *freelist;
   LF_ENTRY_DESCRIPTOR *edesc;
   void **old_buckets, *curr, **next_p, *next;
   void *ret_head = NULL, *ret_tail = NULL;
@@ -2229,10 +2171,8 @@ lf_hash_clear (LF_TRAN_ENTRY * tran, LF_HASH_TABLE * table)
   assert (tran != NULL && table != NULL && table->freelist != NULL);
   edesc = table->entry_desc;
   assert (edesc != NULL);
-
-#if defined (UNITTEST_LF)
-  assert (tran->locked_mutex == NULL);
-#endif /* UNITTEST_LF */
+  freelist = tran->tran_system->freelist;
+  assert (freelist != NULL);
 
   /* lock mutex */
   rv = pthread_mutex_lock (&table->backbuffer_mutex);
@@ -2320,10 +2260,11 @@ lf_hash_clear (LF_TRAN_ENTRY * tran, LF_HASH_TABLE * table)
       OF_GET_PTR_DEREF (ret_tail, edesc->of_local_next) = tran->retired_list;
       tran->retired_list = ret_head;
 
-      ATOMIC_INC_32 (&table->freelist->retired_cnt, ret_count);
+      ATOMIC_INC_32 (&table->freelist->retired.count, ret_count);
 
-      LF_UNITTEST_INC (&lf_clears, ret_count);
-      LF_UNITTEST_INC (&lf_hash_size, -ret_count);
+//      lf_stack_multiple_push (&freelist->retired.ptr, ret_head, ret_tail, edesc);
+
+//      ATOMIC_INC_32 (&table->freelist->retired.count, ret_count);
 
       lf_tran_end_with_mb (tran);
     }
@@ -2441,45 +2382,3 @@ lf_hash_iterate (LF_HASH_TABLE_ITERATOR * it)
   /* we have a valid entry */
   return it->curr;
 }
-
-#if defined (UNITTEST_LF)
-/*
- * lf_reset_counters () - Reset all counters.
- *
- * return :
- * void (in) :
- */
-void
-lf_reset_counters (void)
-{
-  lf_hash_size = 0;
-
-  lf_inserts = 0;
-  lf_inserts_restart = 0;
-  lf_list_inserts = 0;
-  lf_list_inserts_found = 0;
-  lf_list_inserts_save_temp_1 = 0;
-  lf_list_inserts_save_temp_2 = 0;
-  lf_list_inserts_claim = 0;
-  lf_list_inserts_fail_link = 0;
-  lf_list_inserts_success_link = 0;
-
-  lf_deletes = 0;
-  lf_deletes_restart = 0;
-  lf_list_deletes = 0;
-  lf_list_deletes_found = 0;
-  lf_list_deletes_fail_mark_next = 0;
-  lf_list_deletes_fail_unlink = 0;
-  lf_list_deletes_success_unlink = 0;
-  lf_list_deletes_not_found = 0;
-  lf_list_deletes_not_match = 0;
-
-  lf_clears = 0;
-
-  lf_retires = 0;
-  lf_claims = 0;
-  lf_claims_temp = 0;
-  lf_transports = 0;
-  lf_temps = 0;
-}
-#endif /* UNITTEST_LF */
