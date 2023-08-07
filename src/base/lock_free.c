@@ -606,40 +606,30 @@ lf_stack_pop (void **top, LF_ENTRY_DESCRIPTOR * edesc)
 static int
 lf_freelist_alloc_block (LF_FREELIST * freelist)
 {
-  void *head = NULL, *tail = NULL, *new_entry = NULL, *top = NULL;
+  void *entry, *head;
   LF_ENTRY_DESCRIPTOR *edesc;
   int i;
 
   assert (freelist != NULL && freelist->entry_desc != NULL);
   edesc = freelist->entry_desc;
 
-  /* allocate a block */
+  head = VOLATILE_ACCESS (freelist->available, void *);
+
   for (i = 0; i < freelist->block_size; i++)
     {
-      new_entry = edesc->f_alloc ();
-      if (new_entry == NULL)
-	{
-	  /* we use a decoy size since we don't know it */
-	  er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1, (size_t) 1);
-	  return ER_OUT_OF_VIRTUAL_MEMORY;
-	}
+      entry = edesc->f_alloc ();
+      if (entry == NULL)
+      {
+        /* we use a decoy size since we don't know it */
+        er_set (ER_ERROR_SEVERITY, ARG_FILE_LINE, ER_OUT_OF_VIRTUAL_MEMORY, 1, (size_t) 1);
+        return ER_OUT_OF_VIRTUAL_MEMORY;
+      }
 
-      /* of_prev of new entry points to tail; new entry becomes tail */
-      OF_GET_PTR_DEREF (new_entry, edesc->of_local_next) = tail;
-      tail = new_entry;
-
-      /* store first entry as head */
-      if (head == NULL)
-	{
-	  head = new_entry;
-	}
+      OF_GET_PTR_DEREF (entry, edesc->of_local_next) = head;
+      head = entry;
     }
 
-  /* append block to freelist */
-  top = VOLATILE_ACCESS (freelist->available, void *);
-  OF_GET_PTR_DEREF (head, edesc->of_local_next) = top;
-
-  freelist->available = tail;
+  freelist->available = head;
 
   /* increment allocated count */
   freelist->alloc_cnt += freelist->block_size;
@@ -681,6 +671,7 @@ lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF
   freelist->alloc_cnt = 0;
 
   freelist->block_size = block_size;
+  freelist->block_size += 8;
   freelist->entry_desc = edesc;
   freelist->tran_system = tran_system;
 
@@ -797,8 +788,7 @@ start:
 
   assert (tran->stack == NULL);
 
-  if (VOLATILE_ACCESS (freelist->available_cnt, int) < 1)
-  //if (VOLATILE_ACCESS (freelist->available, void *) == NULL)
+  if (VOLATILE_ACCESS (freelist->available_cnt, int) < 8)
   {
     if (lf_freelist_alloc_block (freelist) != NO_ERROR)
     {
@@ -812,16 +802,14 @@ start:
   tail = head;
 
   /* why ?? */
-  /*
   for (i = 0; i < 8 - 1; i++) // << this line makes problem
   {
     tail = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
     assert (tail != NULL);
   }
-  */
 
   freelist->available = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
-  freelist->available_cnt -= 1;
+  freelist->available_cnt -= 8;
   
   if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
     assert (false);
