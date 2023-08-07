@@ -642,8 +642,8 @@ lf_freelist_alloc_block (LF_FREELIST * freelist)
   freelist->available = tail;
 
   /* increment allocated count */
-  ATOMIC_INC_32 (&freelist->alloc_cnt, freelist->block_size);
-  ATOMIC_INC_32 (&freelist->available_cnt, freelist->block_size);
+  freelist->alloc_cnt += freelist->block_size;
+  freelist->available_cnt += freelist->block_size;
 
   /* operation successful, block appended */
   return NO_ERROR;
@@ -746,7 +746,8 @@ void *
 lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist)
 {
   LF_ENTRY_DESCRIPTOR *edesc;
-  void *entry, *head;
+  void *entry, *head, *tail;
+  int i;
 
   assert (tran != NULL);
   assert (freelist != NULL);
@@ -773,25 +774,15 @@ lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist)
 	}
     }
 
-  while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
-
 start:
-  /* try to get a new entry form the safe stack */
-  entry = VOLATILE_ACCESS (freelist->available, void *);
-
-  if (entry != NULL)
+  if (tran->stack != NULL)
   {
-    freelist->available = OF_GET_PTR_DEREF (entry, edesc->of_local_next);
+    entry = tran->stack;
+    tran->stack = OF_GET_PTR_DEREF (entry, edesc->of_local_next);
     OF_GET_PTR_DEREF (entry, edesc->of_local_next) = NULL;
-
-	  /* adjust counter */
-	  ATOMIC_INC_32 (&freelist->available_cnt, -1);
 
 	  if ((edesc->f_init != NULL) && (edesc->f_init (entry) != NO_ERROR))
 	    {
-	      /* can't initialize it */
-        if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-          assert (false);
 	      return NULL;
 	    }
 
@@ -799,20 +790,44 @@ start:
 	  OF_GET_PTR_DEREF (entry, edesc->of_next) = NULL;
 
 	  /* done! */
-    if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-      assert (false);
-
 	  return entry;
   }
 
-  assert (entry == NULL);
+  while (!ATOMIC_CAS_32 (&freelist->occupation, 0, 1));
 
-  if (lf_freelist_alloc_block (freelist) != NO_ERROR)
+  assert (tran->stack == NULL);
+
+  if (VOLATILE_ACCESS (freelist->available_cnt, int) < 1)
+  //if (VOLATILE_ACCESS (freelist->available, void *) == NULL)
   {
-    if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
-      assert (false);
-    return NULL;
+    if (lf_freelist_alloc_block (freelist) != NO_ERROR)
+    {
+      if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
+        assert (false);
+      return NULL;
+    }
   }
+
+  head = VOLATILE_ACCESS (freelist->available, void *);
+  tail = head;
+
+  /* why ?? */
+  /*
+  for (i = 0; i < 8 - 1; i++) // << this line makes problem
+  {
+    tail = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
+    assert (tail != NULL);
+  }
+  */
+
+  freelist->available = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
+  freelist->available_cnt -= 1;
+  
+  if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
+    assert (false);
+
+  OF_GET_PTR_DEREF (tail, edesc->of_local_next) = NULL;
+  tran->stack = head;
 
   goto start;
 
@@ -990,13 +1005,14 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist)
       freelist->available = aval_first;
 
       /* update counters */
-      ATOMIC_INC_32 (&freelist->available_cnt, transported_count);
-      ATOMIC_INC_32 (&freelist->retired_cnt, -transported_count);
+      freelist->available_cnt += transported_count;
 
       LF_UNITTEST_INC (&lf_transports, transported_count);
 
       if (!ATOMIC_CAS_32 (&freelist->occupation, 1, 0))
         assert (false);
+
+      ATOMIC_INC_32 (&freelist->retired_cnt, -transported_count);
     }
 
   /* register cleanup */
