@@ -171,7 +171,7 @@ struct lf_tran_system
 #define LF_TRAN_SYSTEM_INITIALIZER \
   { NULL, 0, {}, { 0, 0 }, NULL, NULL }
 
-#define LF_TRAN_CLEANUP_NECESSARY(e) ((e)->tran_system-> > (e)->last_cleanup_id)
+#define LF_FREELIST_CLEANUP_INTERVAL 50
 
 extern int lf_tran_system_init (LF_TRAN_SYSTEM * sys, int max_threads);
 extern void lf_tran_system_destroy (LF_TRAN_SYSTEM * sys);
@@ -183,9 +183,7 @@ extern UINT64 lf_tran_compute_minimum_transaction_id (LF_TRAN_SYSTEM * sys);
 
 extern void lf_tran_start (LF_TRAN_ENTRY * entry, bool incr);
 extern void lf_tran_end (LF_TRAN_ENTRY * entry);
-/* TODO: Investigate memory barriers. First of all, I need to check if it breaks the inlining of lf_tran_start and
- *	 lf_tran_end functions. Second of all, full memory barriers might not be necessary.
- */
+
 #define lf_tran_start_with_mb(entry, incr) lf_tran_start (entry, incr); MEMORY_BARRIER ()
 #define lf_tran_end_with_mb(entry) MEMORY_BARRIER (); lf_tran_end (entry)
 

@@ -383,7 +383,7 @@ lf_tran_start (LF_TRAN_ENTRY * tran, bool incr)
       tran->transaction_id = ATOMIC_INC_64 (&sys->transaction.global, 1);
       tran->did_incr = true;
 
-      if (tran->transaction_id % 50 == 0)
+      if (tran->transaction_id % LF_FREELIST_CLEANUP_INTERVAL == 0)
 	{
 	  active_tran_min = lf_tran_compute_minimum_transaction_id (sys);
 	    if (sys->transaction.last_cleanup < active_tran_min)
@@ -927,7 +927,7 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, UINT64 min)
   LF_ENTRY_DESCRIPTOR *edesc;
   LF_TRAN_SYSTEM *sys;
   void *prev, *curr;
-  void *head = NULL, *tail = NULL;
+  void *available_head = NULL, *available_tail = NULL;
   UINT64 *del_id;
   int count;
 
@@ -944,35 +944,38 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, UINT64 min)
   curr = OF_GET_PTR_DEREF (curr, edesc->of_local_next);
 
   count = 0;
-  /* the blocks in retired list have been ordered in descending order */
+  /* the blocks in retired list may be not in descending order */
   while (curr)
     {
       del_id = (UINT64 *) OF_GET_PTR (curr, edesc->of_del_tran_id);
       assert (del_id != NULL);
 
-      if (head == NULL)
-	{
-    if (*del_id < min)
-    {
-      head = curr;
-    }
-    else
-    {
-      prev = curr;
-    }
-	}
+      if (*del_id < min)
+      {
+        /* get the block pointed by curr */
+        OF_GET_PTR_DEREF (prev, edesc->of_local_next) = OF_GET_PTR_DEREF (curr, edesc->of_local_next);
 
-  if (head)
-	{
-	  if (edesc->f_uninit != NULL)
-	    {
-	      edesc->f_uninit (curr);
-	    }
-	  tail = curr;
+        /* insert the block in reuse list */
+        OF_GET_PTR_DEREF (curr, edesc->of_local_next) = available_head;
+        available_head = curr;
+        
+        if (available_tail == NULL)
+        {
+          available_tail = curr;
+        }
 
-	  count++;
-	}
- 
+        if (edesc->f_uninit != NULL)
+        {
+          edesc->f_uninit (curr);
+        }
+
+        count++;
+      }
+      else
+      {
+        prev = curr;
+      }
+
       curr = OF_GET_PTR_DEREF (curr, edesc->of_local_next);
     }
 
@@ -982,20 +985,13 @@ lf_freelist_transport (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, UINT64 min)
     return NO_ERROR;
   }
 
-  /* prev is always not NULL pointer */
-  OF_GET_PTR_DEREF (prev, edesc->of_local_next) = NULL;
-
-  /* if local next of prev is not unlinked and the blocks are pushed in available stack, */
-  /* it could make something wrong, so barrier is needed here */
-  MEMORY_BARRIER ();
-
   ATOMIC_INC_32 (&freelist->retired.count, -count);
 
   /* freelist from here */
   FREELIST_HOLD (freelist->occupation);
 
-  OF_GET_PTR_DEREF (tail, edesc->of_local_next) = VOLATILE_ACCESS (freelist->available.ptr, void *);
-  freelist->available.ptr = head;
+  OF_GET_PTR_DEREF (available_tail, edesc->of_local_next) = VOLATILE_ACCESS (freelist->available.ptr, void *);
+  freelist->available.ptr = available_head;
   freelist->available.count += count;
 
   FREELIST_RELEASE (freelist->occupation);
