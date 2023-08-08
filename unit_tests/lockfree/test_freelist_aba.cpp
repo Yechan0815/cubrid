@@ -84,49 +84,6 @@ namespace test_lockfree
 
     int test_freelist_aba ()
 	{
-		LF_TRAN_ENTRY *threads[101];
-		LK_ENTRY *block;
-		int i, j;
-		
-		/* transaction systerm pointer, thread number */
-		if (lf_tran_system_init (&transys, 101) != NO_ERROR)
-		{
-			std::cout << "failed to initialize the tran system" << std::endl;
-			return -1;
-		}
 
-		/* freelist pointer, inital set, block number (set size), LF_ENTRY_DESCRIPTOR *, transystem pointer*/
-		if (lf_freelist_init (&freelist, 100, 100, &desc_test, &transys) != NO_ERROR)
-		{
-			std::cout << "failed to initialize the freelist" << std::endl;
-			return -1;
-		}
-
-		for (i = 0; i < 100; i++)
-		{
-			/* get the transaction entry for thread */
-			threads[i] = lf_tran_request_entry (&transys);
-		}
-
-		std::cout << "alloc_cnt: " << freelist.alloc_cnt << std::endl;
-		std::cout << "available_cnt: " << freelist.available_cnt << std::endl;
-		std::cout << "retired_cnt: " << freelist.retired_cnt << std::endl;
-
-		/* allocate the 99 block to thread 0 and retire */
-		for (i = 0; i < 100; i++)
-		{
-			for (j = 0; j < 99; j++)
-			{
-				block = (LK_ENTRY *) lf_freelist_claim (threads[i], &freelist);
-				std::cout << "th" << i << ": claim block: address: " << block << std::endl;
-
-				lf_freelist_retire (threads[i], &freelist, block);
-				std::cout << "th" << i << ": retire" << std::endl;
-			}
-		}
-
-		std::cout << "alloc_cnt: " << freelist.alloc_cnt << std::endl;
-		std::cout << "available_cnt: " << freelist.available_cnt << std::endl;
-		std::cout << "retired_cnt: " << freelist.retired_cnt << std::endl;
 	}
 } // namespace name

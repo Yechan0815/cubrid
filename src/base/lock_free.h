@@ -122,14 +122,8 @@ typedef struct lf_tran_entry LF_TRAN_ENTRY;
 
 struct lf_tran_entry
 {
-  /* last ID for which a cleanup of retired_list was performed */
-  UINT64 last_cleanup_id;
-
   /* id of current transaction */
   UINT64 transaction_id;
-
-  /* list of retired node for attached thread */
-  void *retired_list;
 
   /* temp entry - for find_and_insert operations, to avoid unnecessary ops */
   void *temp_entry;
@@ -146,7 +140,7 @@ struct lf_tran_entry
   bool did_incr;
 };
 
-#define LF_TRAN_ENTRY_INITIALIZER     { 0, LF_NULL_TRANSACTION_ID, NULL, NULL, NULL, NULL, -1, false }
+#define LF_TRAN_ENTRY_INITIALIZER     { LF_NULL_TRANSACTION_ID, NULL, NULL, NULL, -1, false }
 
 struct lf_tran_system
 {
@@ -159,29 +153,25 @@ struct lf_tran_system
   /* lock-free bitmap */
   LF_BITMAP lf_bitmap;
 
-  /* global delete ID for all delete operations */
-  UINT64 global_transaction_id;
-
-  /* minimum curr_delete_id of all used LF_DTRAN_ENTRY entries */
-  UINT64 min_active_transaction_id;
-
-  /* number of transactions between computing min_active_transaction_id */
-  int mati_refresh_interval;
+  struct
+  {
+    /* global transaction id */
+    UINT64 global;
+    /* transaction id cleaned up at last */
+    UINT64 last_cleanup;
+  } transaction;
 
   /* linked freelist */
   LF_FREELIST *freelist;
-
-  /* current used count */
-  int used_entry_count;
 
   /* entry descriptor */
   LF_ENTRY_DESCRIPTOR *entry_desc;
 };
 
 #define LF_TRAN_SYSTEM_INITIALIZER \
-  { NULL, 0, {}, 0, 0, 100, NULL, 0, NULL }
+  { NULL, 0, {}, { 0, 0 }, NULL, NULL }
 
-#define LF_TRAN_CLEANUP_NECESSARY(e) ((e)->tran_system->min_active_transaction_id > (e)->last_cleanup_id)
+#define LF_TRAN_CLEANUP_NECESSARY(e) ((e)->tran_system-> > (e)->last_cleanup_id)
 
 extern int lf_tran_system_init (LF_TRAN_SYSTEM * sys, int max_threads);
 extern void lf_tran_system_destroy (LF_TRAN_SYSTEM * sys);
@@ -189,7 +179,7 @@ extern void lf_tran_system_destroy (LF_TRAN_SYSTEM * sys);
 extern LF_TRAN_ENTRY *lf_tran_request_entry (LF_TRAN_SYSTEM * sys);
 extern void lf_tran_return_entry (LF_TRAN_ENTRY * entry);
 extern void lf_tran_destroy_entry (LF_TRAN_ENTRY * entry);
-extern void lf_tran_compute_minimum_transaction_id (LF_TRAN_SYSTEM * sys);
+extern UINT64 lf_tran_compute_minimum_transaction_id (LF_TRAN_SYSTEM * sys);
 
 extern void lf_tran_start (LF_TRAN_ENTRY * entry, bool incr);
 extern void lf_tran_end (LF_TRAN_ENTRY * entry);
@@ -236,6 +226,7 @@ extern void *lf_stack_pop (void **top, LF_ENTRY_DESCRIPTOR * edesc);
 typedef struct lf_freelist LF_FREELIST;
 struct lf_freelist
 {
+  /* freelist should be occupied to change the available and total */
   INT32 occupation;
 
   /* allocation unit */
@@ -274,9 +265,9 @@ extern int lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int blo
 			     LF_TRAN_SYSTEM * tran_system);
 extern void lf_freelist_destroy (LF_FREELIST * freelist);
 
-extern void *lf_freelist_claim (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist);
-extern int lf_freelist_retire (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist, void *entry);
-extern int lf_freelist_transport (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist);
+extern void *lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist);
+extern int lf_freelist_retire (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, void *entry);
+extern int lf_freelist_transport (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, UINT64 min);
 
 /*
  * Lock free insert-only list based dictionary
