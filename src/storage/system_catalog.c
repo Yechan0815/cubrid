@@ -186,7 +186,7 @@ struct catalog_entry
 {
   CATALOG_ENTRY *stack;		/* used for freelist */
   CATALOG_ENTRY *next;		/* next in hash chain */
-  UINT64 del_id;		/* delete transaction ID (for lock free) */
+  UINT32 refcount;		/* ref count (for lock free) */
   CATALOG_KEY key;		/* key of catalog entry */
 };
 
@@ -204,7 +204,7 @@ static LF_ENTRY_DESCRIPTOR catalog_entry_Descriptor = {
   /* offsets */
   offsetof (CATALOG_ENTRY, stack),
   offsetof (CATALOG_ENTRY, next),
-  offsetof (CATALOG_ENTRY, del_id),
+  offsetof (CATALOG_ENTRY, refcount),
   offsetof (CATALOG_ENTRY, key),
   0,
 

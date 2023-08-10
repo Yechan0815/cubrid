@@ -579,7 +579,7 @@ static int lock_uninit_entry (void *res);
 LF_ENTRY_DESCRIPTOR obj_lock_entry_desc = {
   offsetof (LK_ENTRY, stack),
   offsetof (LK_ENTRY, next),
-  offsetof (LK_ENTRY, del_id),
+  offsetof (LK_ENTRY, refcount),
   0,				/* does not have a key, not used in a hash table */
   0,				/* does not have a mutex, protected by resource mutex */
   LF_EM_NOT_USING_MUTEX,
@@ -607,7 +607,7 @@ static unsigned int lock_res_key_hash (void *key, int htsize);
 LF_ENTRY_DESCRIPTOR lk_Obj_lock_res_desc = {
   offsetof (LK_RES, stack),
   offsetof (LK_RES, hash_next),
-  offsetof (LK_RES, del_id),
+  offsetof (LK_RES, refcount),
   offsetof (LK_RES, key),
   offsetof (LK_RES, res_mutex),
   LF_EM_USING_MUTEX,

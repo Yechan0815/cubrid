@@ -234,7 +234,7 @@ struct dwb_slots_hash_entry
   DWB_SLOTS_HASH_ENTRY *stack;	/* Used in freelist. */
   DWB_SLOTS_HASH_ENTRY *next;	/* Used in hash table. */
   pthread_mutex_t mutex;	/* The mutex. */
-  UINT64 del_id;		/* Delete transaction ID (for lock free). */
+  UINT32 refcount;		/* ref count (for lock free). */
 
   DWB_SLOT *slot;		/* DWB slot containing a page. */
 
@@ -425,7 +425,7 @@ static LF_ENTRY_DESCRIPTOR slots_entry_Descriptor = {
   /* offsets */
   offsetof (DWB_SLOTS_HASH_ENTRY, stack),
   offsetof (DWB_SLOTS_HASH_ENTRY, next),
-  offsetof (DWB_SLOTS_HASH_ENTRY, del_id),
+  offsetof (DWB_SLOTS_HASH_ENTRY, refcount),
   offsetof (DWB_SLOTS_HASH_ENTRY, vpid),
   offsetof (DWB_SLOTS_HASH_ENTRY, mutex),
 

@@ -72,7 +72,7 @@ struct lf_entry_descriptor
   unsigned int of_next;
 
   /* offset of transaction id of delete operation */
-  unsigned int of_del_tran_id;
+  unsigned int of_refcount;
 
   /* offset of key */
   unsigned int of_key;
@@ -115,16 +115,11 @@ struct lf_entry_descriptor
 /*
  * Lock free transaction based memory garbage collector
  */
-#define LF_NULL_TRANSACTION_ID	      ULONG_MAX
-
 typedef struct lf_tran_system LF_TRAN_SYSTEM;
 typedef struct lf_tran_entry LF_TRAN_ENTRY;
 
 struct lf_tran_entry
 {
-  /* id of current transaction */
-  UINT64 transaction_id;
-
   /* temp entry - for find_and_insert operations, to avoid unnecessary ops */
   void *temp_entry;
 
@@ -136,11 +131,16 @@ struct lf_tran_entry
   /* entry in transaction system */
   int entry_idx;
 
-  /* Was transaction ID incremented? */
-  bool did_incr;
+  struct
+  {
+    /* pointer buffer */
+    void **buffer;
+    /* buffer size */
+    int size;
+  } lockfree;
 };
 
-#define LF_TRAN_ENTRY_INITIALIZER     { LF_NULL_TRANSACTION_ID, NULL, NULL, NULL, -1, false }
+#define LF_TRAN_ENTRY_INITIALIZER     { NULL, NULL, NULL, -1, { NULL, 0 } }
 
 struct lf_tran_system
 {
@@ -153,13 +153,8 @@ struct lf_tran_system
   /* lock-free bitmap */
   LF_BITMAP lf_bitmap;
 
-  struct
-  {
-    /* global transaction id */
-    UINT64 global;
-    /* transaction id cleaned up at last */
-    UINT64 last_cleanup;
-  } transaction;
+  /* transaction id cleaned up at last */
+  UINT32 cleanup;
 
   /* linked freelist */
   LF_FREELIST *freelist;
@@ -169,9 +164,10 @@ struct lf_tran_system
 };
 
 #define LF_TRAN_SYSTEM_INITIALIZER \
-  { NULL, 0, {}, { 0, 0 }, NULL, NULL }
+  { NULL, 0, {}, 0, NULL, NULL }
 
-#define LF_FREELIST_CLEANUP_INTERVAL 50
+#define LF_LOCKFREE_BUFFER_SIZE 32
+#define LF_FREELIST_CLEANUP_INTERVAL 100
 
 extern int lf_tran_system_init (LF_TRAN_SYSTEM * sys, int max_threads);
 extern void lf_tran_system_destroy (LF_TRAN_SYSTEM * sys);
@@ -179,13 +175,6 @@ extern void lf_tran_system_destroy (LF_TRAN_SYSTEM * sys);
 extern LF_TRAN_ENTRY *lf_tran_request_entry (LF_TRAN_SYSTEM * sys);
 extern void lf_tran_return_entry (LF_TRAN_ENTRY * entry);
 extern void lf_tran_destroy_entry (LF_TRAN_ENTRY * entry);
-extern UINT64 lf_tran_compute_minimum_transaction_id (LF_TRAN_SYSTEM * sys);
-
-extern void lf_tran_start (LF_TRAN_ENTRY * entry, bool incr);
-extern void lf_tran_end (LF_TRAN_ENTRY * entry);
-
-#define lf_tran_start_with_mb(entry, incr) lf_tran_start (entry, incr); MEMORY_BARRIER ()
-#define lf_tran_end_with_mb(entry) MEMORY_BARRIER (); lf_tran_end (entry)
 
 /*
  * Global lock free transaction system declarations
@@ -286,7 +275,7 @@ extern void lf_freelist_destroy (LF_FREELIST * freelist);
 
 extern void *lf_freelist_claim (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist);
 extern int lf_freelist_retire (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, void *entry);
-extern int lf_freelist_transport (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist, UINT64 min);
+extern int lf_freelist_transport (LF_TRAN_ENTRY * tran, LF_FREELIST * freelist);
 
 /*
  * Lock free insert-only list based dictionary
@@ -315,6 +304,9 @@ extern int lf_io_list_find_or_insert (void **list_p, void *new_entry, LF_ENTRY_D
 #define LF_LIST_BR_IS_FLAG_SET(br, flag) ((*(br) & (flag)))
 #define LF_LIST_BR_SET_FLAG(br, flag) (*(br) = *(br) | (flag))
 
+extern void lf_entry_protect (LF_TRAN_ENTRY * tran, void *entry);
+extern void lf_list_protect (LF_TRAN_ENTRY * tran, void *list);
+extern void lf_list_neglect (LF_TRAN_ENTRY * tran);
 extern int lf_list_find (LF_TRAN_ENTRY * tran, void **list_p, void *key, int *behavior_flags,
 			 LF_ENTRY_DESCRIPTOR * edesc, void **entry);
 extern int lf_list_delete (LF_TRAN_ENTRY * tran, void **list_p, void *key, void *locked_entry, int *behavior_flags,
@@ -413,8 +405,9 @@ class lf_hash_table_cpp
     T *freelist_claim (lf_tran_entry *t_entry);
     void freelist_retire (lf_tran_entry *t_entry, T *&t);
 
-    void start_tran (lf_tran_entry *t_entry);
-    void end_tran (lf_tran_entry *t_entry);
+    void protect (lf_tran_entry *t_entry, T *&t);
+    void list_protect (lf_tran_entry *t_entry, T *&t);
+    void neglect (lf_tran_entry *t_entry);
 
     size_t get_size () const;
     size_t get_element_count () const;
@@ -580,7 +573,7 @@ lf_hash_table_cpp<Key, T>::unlock (lf_tran_entry *t_entry, T *&t)
     }
   else
     {
-      lf_tran_end_with_mb (t_entry);
+      lf_list_neglect (t_entry);
     }
   t = NULL;
 }
@@ -609,16 +602,25 @@ lf_hash_table_cpp<Key, T>::freelist_retire (lf_tran_entry *t_entry, T *&t)
 
 template <class Key, class T>
 void
-lf_hash_table_cpp<Key, T>::start_tran (lf_tran_entry *t_entry)
+lf_hash_table_cpp<Key, T>::protect (lf_tran_entry *t_entry, T *&t)
 {
-  lf_tran_start_with_mb (t_entry, false);
+  /* protect only one block */
+  lf_entry_protect (t_entry, t);
 }
 
 template <class Key, class T>
 void
-lf_hash_table_cpp<Key, T>::end_tran (lf_tran_entry *t_entry)
+lf_hash_table_cpp<Key, T>::list_protect (lf_tran_entry *t_entry, T *&t)
 {
-  lf_tran_end_with_mb (t_entry);
+  /* protect the blocks in linked list about t */
+  lf_list_protect (t_entry, t);
+}
+
+template <class Key, class T>
+void
+lf_hash_table_cpp<Key, T>::neglect (lf_tran_entry *t_entry)
+{
+  lf_list_neglect (t_entry);
 }
 
 template <class Key, class T>
@@ -687,9 +689,9 @@ template <class Key, class T>
 void
 lf_hash_table_cpp<Key, T>::iterator::restart ()
 {
-  if (m_iter.tran_entry->transaction_id != LF_NULL_TRANSACTION_ID)
+  if (m_iter.tran_entry->lockfree.buffer[0] != NULL)
     {
-      lf_tran_end_with_mb (m_iter.tran_entry);
+      lf_list_neglect (m_iter.tran_entry);
     }
   m_crt_val = NULL;
 }

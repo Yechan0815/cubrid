@@ -97,7 +97,7 @@ struct xasl_cache_ent
   XASL_CACHE_ENTRY *stack;	/* used in freelist */
   XASL_CACHE_ENTRY *next;	/* used in hash table */
   /* Mutex may be addex here (hopefully it is not necessary). */
-  UINT64 del_id;		/* delete transaction ID (for lock free) */
+  UINT32 refcount;		/* ref count (for lock free) */
 
 
   EXECUTION_INFO sql_info;	/* cache entry hash key, user input string & plan */

@@ -23735,7 +23735,7 @@ heap_initialize_hfid_table (void)
 
   edesc->of_local_next = offsetof (HEAP_HFID_TABLE_ENTRY, stack);
   edesc->of_next = offsetof (HEAP_HFID_TABLE_ENTRY, next);
-  edesc->of_del_tran_id = offsetof (HEAP_HFID_TABLE_ENTRY, del_id);
+  edesc->of_refcount = offsetof (HEAP_HFID_TABLE_ENTRY, refcount);
   edesc->of_key = offsetof (HEAP_HFID_TABLE_ENTRY, class_oid);
   edesc->of_mutex = 0;
   edesc->using_mutex = LF_EM_NOT_USING_MUTEX;
@@ -23972,7 +23972,7 @@ heap_cache_class_info (THREAD_ENTRY * thread_p, const OID * class_oid, HFID * hf
       if (error_code != NO_ERROR)
 	{
 	  ASSERT_ERROR ();
-	  lf_tran_end_with_mb (t_entry);
+    lf_list_neglect (t_entry);
 
 	  // remove from hash
 	  int success = 0;
@@ -24001,7 +24001,7 @@ heap_cache_class_info (THREAD_ENTRY * thread_p, const OID * class_oid, HFID * hf
       free (classname_local);
     }
 
-  lf_tran_end_with_mb (t_entry);
+  lf_list_neglect (t_entry);
 
   heap_hfid_table_log (thread_p, class_oid, "heap_cache_class_info hfid=%d|%d|%d, ftype=%s, classname = %s",
 		       HFID_AS_ARGS (hfid), file_type_to_string (ftype), classname_local);
@@ -24056,7 +24056,7 @@ heap_hfid_cache_get (THREAD_ENTRY * thread_p, const OID * class_oid, HFID * hfid
 	  assert_release (false);
 	  boot_find_root_heap (&entry->hfid);
 	  entry->ftype = FILE_HEAP;
-	  lf_tran_end_with_mb (t_entry);
+    lf_list_neglect (t_entry);
 	  return NO_ERROR;
 	}
 
@@ -24067,7 +24067,7 @@ heap_hfid_cache_get (THREAD_ENTRY * thread_p, const OID * class_oid, HFID * hfid
       if (error_code != NO_ERROR)
 	{
 	  ASSERT_ERROR ();
-	  lf_tran_end_with_mb (t_entry);
+    lf_list_neglect (t_entry);
 
 	  // remove entry
 	  lf_hash_delete (t_entry, &heap_Hfid_table->hfid_hash, (void *) class_oid, NULL);
@@ -24096,7 +24096,7 @@ heap_hfid_cache_get (THREAD_ENTRY * thread_p, const OID * class_oid, HFID * hfid
       if (error_code != NO_ERROR)
 	{
 	  ASSERT_ERROR ();
-	  lf_tran_end_with_mb (t_entry);
+    lf_list_neglect (t_entry);
 
 	  // remove entry
 	  lf_hash_delete (t_entry, &heap_Hfid_table->hfid_hash, (void *) class_oid, NULL);
@@ -24121,7 +24121,7 @@ heap_hfid_cache_get (THREAD_ENTRY * thread_p, const OID * class_oid, HFID * hfid
       *classname_out = entry->classname;
     }
 
-  lf_tran_end_with_mb (t_entry);
+  lf_list_neglect (t_entry);
 
   heap_hfid_table_log (thread_p, class_oid, "heap_hfid_cache_get hfid=%d|%d|%d, ftype = %s, classname = %s",
 		       HFID_AS_ARGS (&entry->hfid), file_type_to_string (entry->ftype), entry->classname.load ());
@@ -24179,7 +24179,7 @@ heap_get_hfid_if_cached (THREAD_ENTRY * thread_p, const OID * class_oid, HFID * 
 
       *success = true;
 
-      lf_tran_end_with_mb (t_entry);
+      lf_list_neglect (t_entry);
     }
 
   return NO_ERROR;

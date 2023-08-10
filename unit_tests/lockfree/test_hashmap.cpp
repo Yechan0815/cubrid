@@ -57,7 +57,7 @@ namespace test_lockfree
     my_entry *m_next;
     my_entry *m_rstack;
     pthread_mutex_t m_mutex;
-    UINT64 m_delid;
+    UINT32 m_refcount;
 
     bool m_init;
 
@@ -73,7 +73,7 @@ namespace test_lockfree
   {
     offsetof (my_entry, m_rstack),
     offsetof (my_entry, m_next),
-    offsetof (my_entry, m_delid),
+    offsetof (my_entry, m_refcount),
     offsetof (my_entry, m_key),
     offsetof (my_entry, m_mutex),
 

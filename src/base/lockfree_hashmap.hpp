@@ -65,6 +65,10 @@ namespace lockfree
       T *freelist_claim (tran::index tran_index);
       void freelist_retire (tran::index tran_index, T *&entry);
 
+      void protect (tran::index tran_index, T *&t);
+      void list_protect (tran::index tran_index, T *&t);
+      void neglect (tran::index tran_index);
+
       void start_tran (tran::index tran_index);
       void end_tran (tran::index tran_index);
 
@@ -571,6 +575,27 @@ namespace lockfree
   hashmap<Key, T>::freelist_retire (tran::index tran_index, T *&entry)
   {
     return freelist_retire (get_tran_descriptor (tran_index), entry);
+  }
+
+  template <class Key, class T>
+  void
+  hashmap<Key, T>::protect (tran::index tran_index, T *&t)
+  {
+
+  }
+
+  template <class Key, class T>
+  void
+  hashmap<Key, T>::list_protect (tran::index tran_index, T *&t)
+  {
+
+  }
+
+  template <class Key, class T>
+  void
+  hashmap<Key, T>::neglect (tran::index tran_index)
+  {
+
   }
 
   template <class Key, class T>

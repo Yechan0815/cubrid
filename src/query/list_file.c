@@ -177,7 +177,7 @@ static int qfile_dealloc_sort_list (void *sort_list);
 static LF_ENTRY_DESCRIPTOR qfile_sort_list_entry_desc = {
   offsetof (SORT_LIST, local_next),
   offsetof (SORT_LIST, next),
-  offsetof (SORT_LIST, del_id),
+  offsetof (SORT_LIST, refcount),
   0,				/* does not have a key, not used in a hash table */
   0,				/* does not have a mutex */
   LF_EM_NOT_USING_MUTEX,

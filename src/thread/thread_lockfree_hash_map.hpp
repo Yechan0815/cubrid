@@ -62,8 +62,9 @@ namespace cubthread
       T *freelist_claim (cubthread::entry *thread_p);
       void freelist_retire (cubthread::entry *thread_p, T *&t);
 
-      void start_tran (cubthread::entry *thread_p);
-      void end_tran (cubthread::entry *thread_p);
+      void protect (cubthread::entry *thread_p, T *&t);
+      void list_protect (cubthread::entry *thread_p, T *&t);
+      void neglect (cubthread::entry *thread_p);
 
       size_t get_size () const;
       size_t get_element_count () const;
@@ -258,16 +259,23 @@ namespace cubthread
 
   template <class Key, class T>
   void
-  lockfree_hashmap<Key, T>::start_tran (cubthread::entry *thread_p)
+  lockfree_hashmap<Key, T>::protect (cubthread::entry *thread_p, T *&t)
   {
-    lockfree_hashmap_forward_func_noarg (start_tran, thread_p);
+    lockfree_hashmap_forward_func (protect, thread_p, t);
   }
 
   template <class Key, class T>
   void
-  lockfree_hashmap<Key, T>::end_tran (cubthread::entry *thread_p)
+  lockfree_hashmap<Key, T>::list_protect (cubthread::entry *thread_p, T *&t)
   {
-    lockfree_hashmap_forward_func_noarg (end_tran, thread_p);
+    lockfree_hashmap_forward_func (list_protect, thread_p, t);
+  }
+
+  template <class Key, class T>
+  void
+  lockfree_hashmap<Key, T>::neglect (cubthread::entry *thread_p)
+  {
+    lockfree_hashmap_forward_func_noarg (neglect, thread_p);
   }
 
   template <class Key, class T>

@@ -44,7 +44,7 @@ struct fpcache_ent
   FPCACHE_ENTRY *stack;		/* used in freelist */
   FPCACHE_ENTRY *next;		/* used in hash table */
   pthread_mutex_t mutex;	/* Mutex. */
-  UINT64 del_id;		/* delete transaction ID (for lock free) */
+  UINT32 refcount;		/* refcount (for lock free) */
 
   /* Entry info */
   OID class_oid;		/* Class OID. */
@@ -116,7 +116,7 @@ static BH_CMP_RESULT fpcache_compare_cleanup_candidates (const void *left, const
 static LF_ENTRY_DESCRIPTOR fpcache_Entry_descriptor = {
   offsetof (FPCACHE_ENTRY, stack),
   offsetof (FPCACHE_ENTRY, next),
-  offsetof (FPCACHE_ENTRY, del_id),
+  offsetof (FPCACHE_ENTRY, refcount),
   offsetof (FPCACHE_ENTRY, btid),
   offsetof (FPCACHE_ENTRY, mutex),
 
@@ -553,7 +553,7 @@ fpcache_remove_by_class (THREAD_ENTRY * thread_p, const OID * class_oid)
 		  /* Free mutex. */
 		  pthread_mutex_unlock (&fpcache_entry->mutex);
 		  /* Full buffer. Interrupt iteration, delete entries collected so far and then start over. */
-		  fpcache_Hashmap.end_tran (thread_p);
+		  fpcache_Hashmap.neglect (thread_p);
 		  break;
 		}
 	    }

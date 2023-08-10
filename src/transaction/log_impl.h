@@ -678,7 +678,7 @@ struct global_unique_stats
   GLOBAL_UNIQUE_STATS *stack;	/* used in freelist */
   GLOBAL_UNIQUE_STATS *next;	/* used in hash table */
   pthread_mutex_t mutex;	/* state mutex */
-  UINT64 del_id;		/* delete transaction ID (for lock free) */
+  UINT32 refcount;		/* ref count (for lock free) */
 
   LOG_UNIQUE_STATS unique_stats;	/* statistics for btid unique btree */
   LOG_LSA last_log_lsa;		/* The log lsa of the last RVBT_LOG_GLOBAL_UNIQUE_STATS_COMMIT record logged into the

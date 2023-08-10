@@ -103,7 +103,7 @@ struct spage_save_head
   SPAGE_SAVE_HEAD *rstack;	/* Pointer for retired stack of freelist */
   SPAGE_SAVE_HEAD *next;	/* Next entry in hash bucket */
   pthread_mutex_t mutex;	/* Mutex protecting "total_saved" and "first" */
-  UINT64 del_id;		/* delete transaction ID (for lock free) */
+  UINT32 refcount;		/* ref count (for lock free) */
 
   VPID vpid;			/* Page and volume where the space is saved */
   int total_saved;		/* Total saved space by all transactions */
@@ -129,7 +129,7 @@ static LF_ENTRY_DESCRIPTOR spage_Saving_entry_descriptor = {
   /* signature of SPAGE_SAVE_HEAD */
   offsetof (SPAGE_SAVE_HEAD, rstack),
   offsetof (SPAGE_SAVE_HEAD, next),
-  offsetof (SPAGE_SAVE_HEAD, del_id),
+  offsetof (SPAGE_SAVE_HEAD, refcount),
   offsetof (SPAGE_SAVE_HEAD, vpid),
   offsetof (SPAGE_SAVE_HEAD, mutex),
 
@@ -391,7 +391,7 @@ spage_free_saved_spaces (THREAD_ENTRY * thread_p, void *first_save_entry)
   while (entry != NULL)
     {
       /* we are about to access a lock-free pointer; make sure it's retained until we're done with it */
-      spage_Saving_hashmap.start_tran (thread_p);
+      spage_Saving_hashmap.protect (thread_p, entry->head);
 
       current = entry;
       head = entry->head;
@@ -405,7 +405,7 @@ spage_free_saved_spaces (THREAD_ENTRY * thread_p, void *first_save_entry)
       rv = pthread_mutex_lock (&head->mutex);
 
       /* mutex acquired, no need for lock-free transaction */
-      spage_Saving_hashmap.end_tran (thread_p);
+      spage_Saving_hashmap.neglect (thread_p);
 
       /* Delete the current node from save entry list */
       if (current->prev == NULL)

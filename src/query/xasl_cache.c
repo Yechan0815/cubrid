@@ -169,7 +169,7 @@ static unsigned int xcache_hash_key (void *key, int hash_table_size);
 static LF_ENTRY_DESCRIPTOR xcache_Entry_descriptor = {
   offsetof (XASL_CACHE_ENTRY, stack),
   offsetof (XASL_CACHE_ENTRY, next),
-  offsetof (XASL_CACHE_ENTRY, del_id),
+  offsetof (XASL_CACHE_ENTRY, refcount),
   offsetof (XASL_CACHE_ENTRY, xasl_id),
   0,				/* No mutex. */
 
@@ -821,7 +821,7 @@ xcache_find_sha1 (THREAD_ENTRY * thread_p, const SHA1Hash * sha1, const XASL_CAC
     }
   /* Found a match. */
   /* We have incremented fix count, we don't need lf_tran anymore. */
-  xcache_Hashmap.end_tran (thread_p);
+  xcache_Hashmap.neglect (thread_p);
 
   perfmon_inc_stat (thread_p, PSTAT_PC_NUM_HIT);
   XCACHE_STAT_INC (hits);
@@ -1484,7 +1484,7 @@ xcache_insert (THREAD_ENTRY * thread_p, const compile_context * context, XASL_ST
       assert (*xcache_entry != NULL);
 
       /* We have incremented fix count, we don't need lf_tran anymore. */
-      xcache_Hashmap.end_tran (thread_p);
+      xcache_Hashmap.neglect (thread_p);
 
       if (inserted)
 	{
@@ -1808,7 +1808,7 @@ xcache_invalidate_entries (THREAD_ENTRY * thread_p, bool (*invalidate_check) (XA
 	  if (n_delete_xids == XCACHE_DELETE_XIDS_SIZE)
 	    {
 	      /* Full buffer. Interrupt iteration and we'll start over. */
-	      xcache_Hashmap.end_tran (thread_p);
+	      xcache_Hashmap.neglect (thread_p);
 
 	      xcache_log ("xcache_remove_by_oid full buffer\n" XCACHE_LOG_TRAN_TEXT, XCACHE_LOG_TRAN_ARGS (thread_p));
 

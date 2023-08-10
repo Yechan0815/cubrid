@@ -112,7 +112,7 @@ struct session_state
   SESSION_STATE *stack;		/* used in freelist */
   SESSION_STATE *next;		/* used in hash table */
   pthread_mutex_t mutex;	/* state mutex */
-  UINT64 del_id;		/* delete transaction ID (for lock free) */
+  UINT32 refcount;		/* ref count (for lock free) */
 
   bool is_trigger_involved;
   bool is_last_insert_id_generated;
@@ -155,7 +155,7 @@ static int session_key_increment (void *key, void *existing);
 static LF_ENTRY_DESCRIPTOR session_state_Descriptor = {
   offsetof (SESSION_STATE, stack),
   offsetof (SESSION_STATE, next),
-  offsetof (SESSION_STATE, del_id),
+  offsetof (SESSION_STATE, refcount),
   offsetof (SESSION_STATE, id),
   offsetof (SESSION_STATE, mutex),
 
@@ -919,7 +919,7 @@ session_remove_expired_sessions (THREAD_ENTRY * thread_p)
 	  if (session_check_timeout (state, &active_sessions, &is_expired) != NO_ERROR)
 	    {
 	      pthread_mutex_unlock (&state->mutex);
-	      sessions.states_hashmap.end_tran (thread_p);
+	      sessions.states_hashmap.neglect (thread_p);
 	      err = ER_FAILED;
 	      goto exit_on_end;
 	    }
@@ -935,7 +935,7 @@ session_remove_expired_sessions (THREAD_ENTRY * thread_p)
 		  /* Free current entry mutex. */
 		  pthread_mutex_unlock (&state->mutex);
 		  /* End lock-free transaction started by iterator. */
-		  sessions.states_hashmap.end_tran (thread_p);
+		  sessions.states_hashmap.neglect (thread_p);
 		  break;
 		}
 	    }

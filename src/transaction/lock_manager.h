@@ -85,7 +85,7 @@ struct lk_entry
   LOCK granted_mode;		/* granted lock mode */
   LOCK blocked_mode;		/* blocked lock mode */
   int count;			/* number of lock requests */
-  UINT64 del_id;		/* delete transaction ID (for latch free) */
+  UINT32 refcount;		/* ref count (for latch free) */
   LK_ENTRY *stack;		/* pointer to retired stack */
   LK_ENTRY *next;		/* next entry */
   LK_ENTRY *tran_next;		/* list of locks that trans. holds */
@@ -183,7 +183,7 @@ struct lk_res
   pthread_mutex_t res_mutex;	/* resource mutex */
   LK_RES *hash_next;		/* for hash chain */
   LK_RES *stack;		/* for freelist */
-  UINT64 del_id;		/* delete transaction ID (for latch free) */
+  UINT32 refcount;		/* ref count (for latch free) */
 
   // *INDENT-OFF*
   lk_res ();

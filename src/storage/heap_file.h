@@ -203,7 +203,7 @@ struct heap_hfid_table_entry
   OID class_oid;		/* key - OID */
   HEAP_HFID_TABLE_ENTRY *stack;	/* used in freelist */
   HEAP_HFID_TABLE_ENTRY *next;	/* used in hash table */
-  UINT64 del_id;		/* delete transaction ID (for lock free) */
+  UINT32 refcount;		/* ref count (for lock free) */
 
   HFID hfid;			/* value - HFID */
   FILE_TYPE ftype;		/* value - FILE_HEAP or FILE_HEAP_REUSE_SLOTS */

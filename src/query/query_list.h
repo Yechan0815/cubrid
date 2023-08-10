@@ -410,7 +410,7 @@ typedef enum
 typedef struct sort_list SORT_LIST;
 struct sort_list
 {
-  UINT64 del_id;		/* for latch-free freelist */
+  UINT32 refcount;		/* for latch-free freelist */
   struct sort_list *local_next;	/* for latch-free freelist */
   struct sort_list *next;	/* Next sort item */
   QFILE_TUPLE_VALUE_POSITION pos_descr;	/* Value position descriptor */
