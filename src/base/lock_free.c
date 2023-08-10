@@ -29,6 +29,9 @@
 #include "error_manager.h"
 #include "error_code.h"
 #include "memory_alloc.h"
+#include "thread_daemon.hpp"
+#include "thread_entry_task.hpp"
+#include "thread_manager.hpp"
 
 #if !defined(SERVER_MODE)
 #define pthread_mutex_init(a, b)
@@ -103,12 +106,81 @@ static bool tran_systems_initialized = false;
   abort()
 #endif /* NDEBUG */
 
+/*
+ * lock free daemon
+ */
+static LF_DAEMON lock_free_daemon = LF_DAEMON_INITIALIZER;
+
+static void lock_free_daemon_init ();
+static void lock_free_daemon_destroy ();
+
 static int lf_list_insert_internal (LF_TRAN_ENTRY * tran, void **list_p, void *key, int *behavior_flags,
 				    LF_ENTRY_DESCRIPTOR * edesc, LF_FREELIST * freelist, void **entry, int *inserted);
 static int lf_hash_insert_internal (LF_TRAN_ENTRY * tran, LF_HASH_TABLE * table, void *key, int bflags, void **entry,
 				    int *inserted);
 static int lf_hash_delete_internal (LF_TRAN_ENTRY * tran, LF_HASH_TABLE * table, void *key, void *locked_entry,
 				    int bflags, int *success);
+
+
+#if defined(SERVER_MODE0)
+void
+lock_free_task_execute (cubthread::entry & thread_ref)
+{
+  LF_FREELIST *curr;
+  int count;
+  int i;
+
+/*
+  if (!BO_IS_SERVER_RESTARTED ())
+    {
+      /* wait for boot to finish */
+      /*
+      return;
+    }
+    */
+
+restart:
+    curr = VOLATILE_ACCESS (lock_free_daemon.freelist.ptr, LF_FREELIST *);
+    count = VOLATILE_ACCESS (lock_free_daemon.freelist.count, int);
+    for (i = 0; i < count; i++)
+    {
+      if (count != VOLATILE_ACCESS (lock_free_daemon.freelist.count, int))
+      {
+        /* someone modified the list */
+        goto restart;
+      }
+
+      /* temp code */
+      printf ("%d:%x) total: %d\tavailable: %d\nretired: %d\n",
+        i + 1, curr, curr->total, curr->available.count, curr->retired.count);
+
+      curr = curr->next;
+    }
+}
+
+void
+lock_free_daemon_init ()
+{
+  assert (lock_free_daemon.daemon == NULL);
+
+  cubthread::looper looper = cubthread::looper (std::chrono::milliseconds (1000));
+  cubthread::entry_callable_task *daemon_task = new cubthread::entry_callable_task (lock_free_task_execute);
+
+  lock_free_daemon.daemon = (void *) cubthread::get_manager ()->create_daemon (looper, daemon_task, "lock_free");
+}
+
+void
+lock_free_daemon_destroy ()
+{
+  cubthread::daemon **lock_free;
+
+  assert (lock_free_daemon.daemon != NULL);
+
+  lock_free = (cubthread::daemon **) &lock_free_daemon.daemon;
+  cubthread::get_manager ()->destroy_daemon (*lock_free);
+}
+#endif /* SERVER_MODE */
+
 
 /*
  * lf_callback_vpid_hash () - hash a VPID
@@ -237,7 +309,7 @@ lf_tran_system_destroy (LF_TRAN_SYSTEM * sys)
 }
 
 /*
- * lf_dtran_request_entry () - request a tran "entry"
+ * lf_tran_request_entry () - request a tran "entry"
  *   returns: entry or NULL on error
  *   sys(in): tran system
  */
@@ -328,7 +400,7 @@ lf_tran_destroy_entry (LF_TRAN_ENTRY * entry)
 }
 
 /*
- * lf_dtran_compute_minimum_delete_id () - compute minimum delete id of all
+ * lf_tran_compute_minimum_delete_id () - compute minimum delete id of all
  *					   used entries of a tran system
  *   return: error code or NO_ERROR
  *   sys(in): tran system
@@ -477,13 +549,11 @@ lf_initialize_transaction_systems (int max_threads)
       goto error;
     }
 
-  tran_systems_initialized = true;
+#if defined (SERVER_MODE0)
+  lock_free_daemon_init ();
+#endif
 
-  /*
-     #if defined (SERVER_MODE)
-     lock_free_daemon_init ();
-     #endif
-   */
+  tran_systems_initialized = true;
 
   return NO_ERROR;
 
@@ -498,11 +568,9 @@ error:
 void
 lf_destroy_transaction_systems (void)
 {
-  /*
-     #if defined (SERVER_MODE)
-     lock_free_daemon_destroy ();
-     #endif
-   */
+#if defined (SERVER_MODE0)
+  lock_free_daemon_destroy ();
+#endif
 
   lf_tran_system_destroy (&spage_saving_Ts);
   lf_tran_system_destroy (&obj_lock_res_Ts);
@@ -544,6 +612,14 @@ lf_stack_push (void **top, void *entry, LF_ENTRY_DESCRIPTOR * edesc)
   return NO_ERROR;
 }
 
+/*
+ * lf_stack_multiple_push () - push an entry on a lock free stack
+ *   returns: error code or NO_ERROR
+ *   top(in/out): top of stack
+ *   head(in): head of list to push
+ *   tail(in): tail of list to push
+ *   edesc(in): descriptor for entry
+ */
 int
 lf_stack_multiple_push (void **top, void *head, void *tail, LF_ENTRY_DESCRIPTOR * edesc)
 {
@@ -647,6 +723,65 @@ lf_freelist_alloc_block (LF_FREELIST * freelist)
 }
 
 /*
+ * lf_freelist_register () - register the freelist for using in lock free daemon
+ *   freelist(in): freelist to be registered
+ */
+static void
+lf_freelist_register (LF_FREELIST * freelist)
+{
+#if defined(SERVER_MODE0)
+  LF_FREELIST *head;
+
+  assert (freelist != NULL);
+
+  do
+  {
+    head = VOLATILE_ACCESS (lock_free_daemon.freelist.ptr, LF_FREELIST *);
+    freelist->next = head;
+  } while (!ATOMIC_CAS_ADDR (&lock_free_daemon.freelist.ptr, head, freelist));
+  ATOMIC_INC_32 (&lock_free_daemon.freelist.count, 1);
+#endif
+}
+
+/*
+ * lf_freelist_unregister () - unregister the freelist from freelist list
+ *   freelist(in): freelist to be unregistered
+ */
+static void
+lf_freelist_unregister (LF_FREELIST * freelist)
+{
+#if defined(SERVER_MODE0)
+  LF_FREELIST *prev, *curr, **ptr;
+
+  assert (freelist != NULL);
+
+  do
+  {
+    prev = NULL;
+    curr = VOLATILE_ACCESS (lock_free_daemon.freelist.ptr, LF_FREELIST *);
+    while (curr)
+    {
+      if (curr == freelist)
+      {
+        break;
+      }
+      prev = curr;
+      curr = curr->next;
+    }
+
+    ptr = &lock_free_daemon.freelist.ptr;
+    if (prev != NULL)
+    {
+      ptr = &prev->next;
+    }
+  } while (!ATOMIC_CAS_ADDR (ptr, curr, curr->next));
+  ATOMIC_INC_32 (&lock_free_daemon.freelist.count, -1);
+
+  freelist->next = NULL;
+#endif /* SERVER_MODE */
+}
+
+/*
  * lf_freelist_init () - initialize a freelist
  *   returns: error code or NO_ERROR
  *   freelist(in): freelist to initialize
@@ -673,8 +808,8 @@ lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF
   freelist->occupation = LF_FREELIST_RELEASE;
 
   /* make block size to a multiple of LF_FREELIST_BUNDLE_SIZE */
-  block_size &= (~(LF_FREELIST_BUNDLE_SIZE - 1));
-  block_size += LF_FREELIST_BUNDLE_SIZE;
+  block_size &= (~(LF_FREELIST_BUNDLE_SIZE_DEFAULT - 1));
+  block_size += LF_FREELIST_BUNDLE_SIZE_DEFAULT;
   freelist->block_size = block_size;
 
   freelist->total = 0;
@@ -687,6 +822,8 @@ lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF
 
   freelist->entry_desc = edesc;
   freelist->tran_system = tran_system;
+
+  freelist->next = NULL;
 
   /* give to tran_system */
   tran_system->freelist = freelist;
@@ -705,6 +842,9 @@ lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF
     }
 
   FREELIST_RELEASE (freelist->occupation);
+
+  /* register freelist to linked list for daemon */
+  lf_freelist_register (freelist);
 
   /* all ok */
   return NO_ERROR;
@@ -729,6 +869,9 @@ lf_freelist_destroy (LF_FREELIST * freelist)
 
   assert (freelist->entry_desc != NULL);
   edesc = freelist->entry_desc;
+
+  /* unregister freelist */
+  lf_freelist_unregister (freelist);
 
   /* available list */
   /* wait */
@@ -832,14 +975,14 @@ start:
   head = VOLATILE_ACCESS (freelist->available.ptr, void *);
   tail = head;
 
-  for (i = 0; i < LF_FREELIST_BUNDLE_SIZE - 1; i++)
+  for (i = 0; i < LF_FREELIST_BUNDLE_SIZE_DEFAULT - 1; i++)
     {
       tail = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
       assert (tail != NULL);
     }
 
   freelist->available.ptr = OF_GET_PTR_DEREF (tail, edesc->of_local_next);
-  freelist->available.count -= LF_FREELIST_BUNDLE_SIZE;
+  freelist->available.count -= LF_FREELIST_BUNDLE_SIZE_DEFAULT;
 
   FREELIST_RELEASE (freelist->occupation);
 

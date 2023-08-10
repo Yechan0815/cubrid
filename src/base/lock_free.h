@@ -219,9 +219,11 @@ extern void *lf_stack_pop (void **top, LF_ENTRY_DESCRIPTOR * edesc);
 #define LF_FREELIST_HOLD		1
 
 /* this should be a power of 2 */
-#define LF_FREELIST_BUNDLE_SIZE (1 << 3)
+#define LF_FREELIST_BUNDLE_SIZE_DEFAULT (1 << 3)
 
 typedef struct lf_freelist LF_FREELIST;
+typedef struct lf_daemon LF_DAEMON;
+
 struct lf_freelist
 {
   /* freelist should be occupied to change the available and total */
@@ -254,10 +256,29 @@ struct lf_freelist
 
   /* transaction system */
   LF_TRAN_SYSTEM *tran_system;
+
+  LF_FREELIST *next;
 };
 
 #define LF_FREELIST_INITIALIZER \
-  { LF_FREELIST_RELEASE, 0, 0, { NULL, 0 }, { NULL, 0 }, NULL, NULL }
+  { LF_FREELIST_RELEASE, 0, 0, { NULL, 0 }, { NULL, 0 }, NULL, NULL, NULL }
+
+struct lf_daemon
+{
+  /* lock free daemon */
+  void *daemon;
+
+  /* data of freelist */
+  struct
+  {
+    /* head of freelist linked list */
+    LF_FREELIST *ptr;
+    /* the number of registred freelist */
+    int count;
+  } freelist;
+};
+
+#define LF_DAEMON_INITIALIZER { NULL, { NULL, 0 } }
 
 extern int lf_freelist_init (LF_FREELIST * freelist, int initial_blocks, int block_size, LF_ENTRY_DESCRIPTOR * edesc,
 			     LF_TRAN_SYSTEM * tran_system);

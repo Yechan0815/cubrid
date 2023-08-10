@@ -33,8 +33,4 @@ main (int argc, char **argv)
 {
   /* all ok */
   return 0;
-
-fail:
-  printf ("Unit tests failed!\n");
-  return ER_FAILED;
 }
