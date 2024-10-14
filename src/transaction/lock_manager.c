@@ -1118,6 +1118,7 @@ lock_initialize_object_hash_table (void)
   const int block_count = 2;
   const int block_size = (int) MAX ((lk_Gl.max_obj_locks * LK_RES_RATIO) / block_count, 1);
   lk_Obj_lock_res_desc.max_alloc_cnt = prm_get_integer_value (PRM_ID_LK_ESCALATION_AT);
+  lk_Obj_lock_res_desc.max_alloc_cnt = 1;
 
   /* initialize object hash table */
   lk_Gl.m_obj_hash_table.init (obj_lock_res_Ts, THREAD_TS_OBJ_LOCK_RES, obj_hash_size, block_size, block_count,
@@ -4017,9 +4018,14 @@ lock_internal_perform_unlock_object (THREAD_ENTRY * thread_p, LK_ENTRY * entry_p
 	}
     }
 
+  LF_TRAN_ENTRY *t_entry_res = thread_get_tran_entry (thread_p, THREAD_TS_OBJ_LOCK_RES);
+
   /* hold resource mutex */
   res_ptr = entry_ptr->res_head;
+  er_log_debug (ARG_FILE_LINE, "[%d] lock_internal_perform_unlock_object: try to acquire a mutex for %x\n", t_entry_res->entry_idx, res_ptr);
   rv = pthread_mutex_lock (&res_ptr->res_mutex);
+  er_log_debug (ARG_FILE_LINE, "[%d] lock_internal_perform_unlock_object: got the mutex for %x\n", t_entry_res->entry_idx, res_ptr);
+  sleep(5);
 
   /* check if the transaction is in the holder list */
   prev = NULL;
@@ -4152,6 +4158,7 @@ lock_internal_perform_unlock_object (THREAD_ENTRY * thread_p, LK_ENTRY * entry_p
       if (res_ptr->non2pl == NULL)
 	{
 	  /* if resource entry is empty, remove it. */
+  er_log_debug (ARG_FILE_LINE, "[%d] lock_internal_perform_unlock_object: lock_remove_resource %x\n", t_entry_res->entry_idx, res_ptr);
 	  (void) lock_remove_resource (thread_p, res_ptr);
 	}
       else
@@ -6030,6 +6037,9 @@ lock_object (THREAD_ENTRY * thread_p, const OID * oid, const OID * class_oid, LO
     }
   isolation = logtb_find_isolation (tran_index);
 
+  LF_TRAN_ENTRY *t_entry = thread_get_tran_entry (thread_p, THREAD_TS_OBJ_LOCK_RES);
+  er_log_debug (ARG_FILE_LINE, "[%d] lock_object: oid %d|%d|%d\n", t_entry->entry_idx, oid->volid, oid->pageid, oid->slotid);
+  
   /* check if the given oid is root class oid */
   if (OID_IS_ROOTOID (oid))
     {

@@ -25,6 +25,9 @@
 
 #include <assert.h>
 
+#include "system_parameter.h"
+#include "error_manager.h"
+
 #include "porting.h"
 #include "lock_free.h"
 #include "error_manager.h"
@@ -896,8 +899,10 @@ lf_freelist_retire (LF_TRAN_ENTRY * tran_entry, LF_FREELIST * freelist, void *en
     }
 
   /* free entry if alloc_cnt is greater than max_alloc_cnt */
+  er_log_debug (ARG_FILE_LINE, "[%d] lf_freelist_retire: alloc_threshold: %d alloc_cnt: %d\n", tran_entry->entry_idx, edesc->max_alloc_cnt, freelist->alloc_cnt);
   if (freelist->alloc_cnt > edesc->max_alloc_cnt)
     {
+      er_log_debug (ARG_FILE_LINE, "[%d] lf_freelist_retire: free memory: %x\n", tran_entry->entry_idx, entry);
       edesc->f_free (entry);
       ATOMIC_INC_32 (&freelist->alloc_cnt, -1);
 
@@ -1436,10 +1441,15 @@ restart_search:
 	      if (edesc->using_mutex)
 		{
 		  /* entry has a mutex protecting it's members; lock it */
+      er_log_debug (ARG_FILE_LINE, "[%d] lf_list_insert_internal: try to acquire a mutex for %x\n", tran->entry_idx, curr);
 		  LF_LOCK_ENTRY (curr);
+      er_log_debug (ARG_FILE_LINE, "[%d] lf_list_insert_internal: got the mutex for %x\n", tran->entry_idx, curr);
+      sleep (5);
 
 		  /* mutex has been locked, no need to keep transaction alive */
 		  LF_END_TRAN_FORCE ();
+
+      er_log_debug (ARG_FILE_LINE, "[%d] lf_list_insert_internal: access memory %x\n", tran->entry_idx, curr);
 
 		  if (ADDR_HAS_MARK (OF_GET_PTR_DEREF (curr, edesc->of_next)))
 		    {
