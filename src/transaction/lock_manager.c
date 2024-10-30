@@ -164,6 +164,9 @@ extern LOCK_COMPATIBILITY lock_Comp[12][12];
     } \
    while (0)
 
+#define OF_GET_LK_ENTRY_DEREF(p,o) \
+    (*((LK_ENTRY * volatile *) (((char *) (p)) + (o))))
+
 #endif /* SERVER_MODE */
 
 #define RESOURCE_ALLOC_WAIT_TIME 10	/* 10 msec */
@@ -5150,12 +5153,10 @@ lock_select_deadlock_victim (THREAD_ENTRY * thread_p, int s, int t)
 
 	  /* In this case, entry is not on any stack (global or local). */
 	  /* we can link the lock lists using member accessible via of_local_next. */
-	  *((LK_ENTRY * volatile *) (((char *) holder) + obj_lock_entry_desc.of_local_next)) =
-	    victims[victim_count].holder;
+	  OF_GET_LK_ENTRY_DEREF (holder, obj_lock_entry_desc.of_local_next) = victims[victim_count].holder;
 	  victims[victim_count].holder = holder;
 
-	  *((LK_ENTRY * volatile *) (((char *) waiter) + obj_lock_entry_desc.of_local_next)) =
-	    victims[victim_count].waiter;
+	  OF_GET_LK_ENTRY_DEREF (waiter, obj_lock_entry_desc.of_local_next) = victims[victim_count].waiter;
 	  victims[victim_count].waiter = waiter;
 
 	  if (v == t)
@@ -9387,74 +9388,66 @@ lock_event_log_deadlock_locks (THREAD_ENTRY * thread_p, FILE * log_fp, int tran_
 {
   const char *prog, *user, *host;
   int pid;
+  int max_num_locks;
   int rv, i, indent = 2;
   LK_TRAN_LOCK *tran_lock;
   const char *lock_name;
+  LK_ENTRY *entry;
 
   assert (csect_check_own (thread_p, CSECT_EVENT_LOG_FILE) == 1);
 
-  for (i = 0; holder != NULL && waiter != NULL && i < MAX_NUM_LOCKS_DUMP_TO_EVENT_LOG;
-       holder = *((LK_ENTRY * volatile *) (((char *) holder) + obj_lock_entry_desc.of_local_next)),
-       waiter = *((LK_ENTRY * volatile *) (((char *) waiter) + obj_lock_entry_desc.of_local_next)), i += 2)
+  max_num_locks =
+    (MAX_NUM_LOCKS_DUMP_TO_EVENT_LOG % 2) ? MAX_NUM_LOCKS_DUMP_TO_EVENT_LOG + 1 : MAX_NUM_LOCKS_DUMP_TO_EVENT_LOG;
+  entry = holder;
+  for (i = 0; entry != NULL && i < max_num_locks; i++)
     {
-      /* holder */
-      fprintf (log_fp, "hold:\n");
+      /* holder and waiter are printed alternately */
+      fprintf (log_fp, i % 2 ? "\nwait:\n" : "hold:\n");
 
-      tran_lock = &lk_Gl.tran_lock_table[holder->tran_index];
+      tran_lock = &lk_Gl.tran_lock_table[entry->tran_index];
       rv = pthread_mutex_lock (&tran_lock->hold_mutex);
 
-      logtb_find_client_name_host_pid (holder->tran_index, &prog, &user, &host, &pid);
+      logtb_find_client_name_host_pid (entry->tran_index, &prog, &user, &host, &pid);
       fprintf (log_fp, "%*cclient: %s@%s|%s(%d)", indent, ' ', user, host, prog, pid);
-      if (holder->tran_index == tran_index)
+      if (entry->tran_index == tran_index)
 	{
 	  fprintf (log_fp, " (Deadlock Victim)");
 	}
       fprintf (log_fp, "\n");
 
-      for (lock_name = LOCK_TO_LOCKMODE_STRING (holder->granted_mode); *lock_name == ' '; lock_name++);
+      for (lock_name =
+	   i % 2 ? LOCK_TO_LOCKMODE_STRING (entry->blocked_mode) : LOCK_TO_LOCKMODE_STRING (entry->granted_mode);
+	   *lock_name == ' '; lock_name++);
       fprintf (log_fp, "%*clock: %s", indent, ' ', lock_name);
-      if (holder->blocked_mode != NULL_LOCK)
+      if (!(i % 2) && entry->blocked_mode != NULL_LOCK)
 	{
-	  for (lock_name = LOCK_TO_LOCKMODE_STRING (holder->blocked_mode); *lock_name == ' '; lock_name++);
+	  for (lock_name = LOCK_TO_LOCKMODE_STRING (entry->blocked_mode); *lock_name == ' '; lock_name++);
 	  fprintf (log_fp, "|waiting for lock conversion to %s", lock_name);
 	}
-      SET_EMULATE_THREAD_WITH_LOCK_ENTRY (thread_p, holder);
-      lock_event_log_lock_info (thread_p, log_fp, holder);
+      SET_EMULATE_THREAD_WITH_LOCK_ENTRY (thread_p, entry);
+      lock_event_log_lock_info (thread_p, log_fp, entry);
 
-      event_log_sql_string (thread_p, log_fp, &holder->xasl_id, indent);
-      event_log_bind_values (thread_p, log_fp, holder->tran_index, holder->bind_index_in_tran);
+      event_log_sql_string (thread_p, log_fp, &entry->xasl_id, indent);
+      event_log_bind_values (thread_p, log_fp, entry->tran_index, entry->bind_index_in_tran);
 
       CLEAR_EMULATE_THREAD (thread_p);
 
       pthread_mutex_unlock (&tran_lock->hold_mutex);
 
-      /* waiter */
-      fprintf (log_fp, "\nwait:\n");
+      fprintf (log_fp, i % 2 ? "\n" : "");
 
-      tran_lock = &lk_Gl.tran_lock_table[waiter->tran_index];
-      rv = pthread_mutex_lock (&tran_lock->hold_mutex);
-
-      logtb_find_client_name_host_pid (waiter->tran_index, &prog, &user, &host, &pid);
-      fprintf (log_fp, "%*cclient: %s@%s|%s(%d)", indent, ' ', user, host, prog, pid);
-      if (waiter->tran_index == tran_index)
+      if (i % 2)
 	{
-	  fprintf (log_fp, " (Deadlock Victim)");
+	  /* waiter to holder */
+	  entry = holder;
+	  waiter = OF_GET_LK_ENTRY_DEREF (waiter, obj_lock_entry_desc.of_local_next);
 	}
-      fprintf (log_fp, "\n");
-
-      for (lock_name = LOCK_TO_LOCKMODE_STRING (waiter->blocked_mode); *lock_name == ' '; lock_name++);
-      fprintf (log_fp, "%*clock: %s", indent, ' ', lock_name);
-      SET_EMULATE_THREAD_WITH_LOCK_ENTRY (thread_p, waiter);
-      lock_event_log_lock_info (thread_p, log_fp, waiter);
-
-      event_log_sql_string (thread_p, log_fp, &waiter->xasl_id, indent);
-      event_log_bind_values (thread_p, log_fp, waiter->tran_index, waiter->bind_index_in_tran);
-
-      CLEAR_EMULATE_THREAD (thread_p);
-
-      pthread_mutex_unlock (&tran_lock->hold_mutex);
-
-      fprintf (log_fp, "\n");
+      else
+	{
+	  /* holder to waiter */
+	  entry = waiter;
+	  holder = OF_GET_LK_ENTRY_DEREF (holder, obj_lock_entry_desc.of_local_next);
+	}
     }
 
   assert ((holder == NULL && waiter == NULL) || (holder != NULL && waiter != NULL));
