@@ -8027,14 +8027,14 @@ final_:
   /* dump deadlock cycle to event log file */
   for (k = 0; k < victim_count; k++)
     {
-      if (victims[k].log_num_entries == 0 || victims[k].log_entries == NULL)
-	{
-	  continue;
-	}
-
       log_fp = event_log_start (thread_p, "DEADLOCK");
       if (log_fp != NULL)
 	{
+	  if (victims[k].log_entries == NULL)
+	    {
+	      event_log_end (thread_p);
+	      continue;
+	    }
 	  lock_event_log_deadlock_locks (thread_p, log_fp, victims[k].tran_index, victims[k].log_trunc,
 					 victims[k].log_num_entries, victims[k].log_entries);
 	  event_log_end (thread_p);
